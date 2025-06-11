@@ -77,11 +77,10 @@ footer {visibility: hidden;}
 """
 st.markdown(custom_css, unsafe_allow_html=True)
 
-endpoint = 'https://pokeapi.co/api/v2/pokemon'
 
-params= {
-    'name': 'pikachu',
-}
+endpoint_clusters = 'https://decp-708609074810.europe-west1.run.app/api/predict'
+
+
 
 # Sidebar: Module selector
 module = st.sidebar.radio("Choix du module :", ["Exploration des données", "Estimation du montant et marchés similaires"])
@@ -101,30 +100,38 @@ if module == "Estimation du montant et marchés similaires":
         80000000, 85000000, 90000000, 92000000, 98000000
  ])
     DureeMois = st.slider('Estimation de la durée en mois', 1, 48, 6)
+    OffresRecues = st.number_input('Nombre d\'offres reçues', min_value=0, max_value=100, value=3, step=1)
     ccag = st.selectbox('CCAG', ['Travaux', 'Fournitures courantes et services', 'Pas de CCAG', 'Autre'])
     nature = st.selectbox('Nature du marché', ['Marché', 'Marché de partenariat', 'Marché de défense ou de sécurité'])
+    formePrix = st.selectbox('Forme du prix', ['Forfaitaire', 'Unitaire', 'Mixte'])
     procedure = st.selectbox('Procédure du marché', ['Procédure adaptée', 'Appel d\'offres ouvert', 'Marché passé sans publicité ni mise en concurrence préalable'])
     titulaire_categorie = st.selectbox("Taille de l'entreprise", ['PME', 'ETI', 'GE'])
     siret = st.number_input("Entrer le numéro SIRET", min_value=10000000000000, max_value=99999999999999, value=80866548300018, step=1, format="%d")
 
     st.write("Le montant estimé du marché est de :")
-    if st.button("Estimer le montant"):
-        st.write(requests.get(f'{endpoint}/pikachu'))
+    #if st.button("Estimer le montant"):
+        #st.write(requests.get(f'{endpoint}/pikachu'))
 
     if st.button("Voir les marchés similaires"):
-        st.write("Affichage des marchés similaires pour le Code CPV sélectionné :", Code_CPV)
-
+        params = {
+            "montant": 0,
+            "dureeMois": DureeMois,
+            "offresRecues": OffresRecues,
+            "procedure": procedure,
+            "nature": nature,
+            "formePrix": formePrix,
+            "ccag": ccag,
+            "codeCPV_2_3": Code_CPV
+            }
+        response = requests.post(endpoint_clusters, json=params)
+        if response.status_code == 200:
+            data = response.json()
+            st.write(data)
 
 elif module == "Exploration des données":
     st.header("🔍 Exploration des données")
 
 
-
-response = requests.get(f'{endpoint}/pikachu')
-
-if response.status_code == 200:
-    data = response.json()
-    st.write(response.json()['moves'][0])
 
 
 
