@@ -81,7 +81,6 @@ footer {visibility: hidden;}
 """
 st.markdown(custom_css, unsafe_allow_html=True)
 
-
 endpoint_clusters = 'https://decp-708609074810.europe-west1.run.app/api/predict'
 endpoint_estimation = 'https://decp-708609074810.europe-west1.run.app/api/montant'
 
