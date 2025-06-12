@@ -222,7 +222,7 @@ if module == "Estimation du montant et marchés similaires":
         else:
             st.error("Erreur lors de l'estimation du montant. Veuillez vérifier les paramètres et réessayer.")
 
-            
+
     montant = st.number_input("Montant du marché (en euros)", min_value=0, value=0, step=1000, format="%d")
 
     if st.button("Voir les marchés similaires"):
@@ -242,6 +242,8 @@ if module == "Estimation du montant et marchés similaires":
             st.write(data)
         else:
             st.error("Erreur lors de la récupération des marchés similaires. Veuillez vérifier les paramètres et réessayer.")
+
+
 
 elif module == "Exploration des données":
     st.header("🔍 Exploration des données")
