@@ -173,7 +173,7 @@ bins = pd.read_csv('data/bins.csv', header=None).values.flatten()
 module = st.sidebar.radio(
     "Choix du module :",
     ["Exploration des données", "Estimation du montant et marchés similaires"]
-)
+                         )
 
 # Main Panel
 st.title("Lanterne publique")
