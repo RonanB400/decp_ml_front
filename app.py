@@ -239,11 +239,11 @@ if module == "Estimation du montant et marchés similaires":
             "nature": nature,
             "formePrix": formePrix,
             "ccag": ccag,
-            "codeCPV_2_3": cpv[Code_CPV],
+            "codeCPV_3": cpv[Code_CPV],
             "sousTraitanceDeclaree": 0.0,
             "origineFrance": 0.0,
             "marcheInnovant": 0.0,
-            "idAccordCadre": 0.0,
+            "idAccordCadre": " ",
             "typeGroupementOperateurs": "Pas de groupement",
             "tauxAvance": 0.0,
         }
@@ -253,7 +253,12 @@ if module == "Estimation du montant et marchés similaires":
             data = response.json()
             st.write(data)
         else:
-            st.error("Erreur lors de la récupération des marchés similaires. Veuillez vérifier les paramètres et réessayer.")
+            st.error(f"Erreur lors de la récupération des marchés similaires. "
+                    f"Code d'erreur: {response.status_code}")
+            st.write("**Détails de l'erreur:**")
+            st.write(response.text)
+            st.write("**Paramètres envoyés:**")
+            st.json(params)
 
 
 
@@ -278,14 +283,20 @@ elif module == "Exploration des données":
                         'https://decp-708609074810.europe-west1.run.app'
                         '/api/rag'
                     )
-                    payload = {"query": question}
+                    payload = {"question": question}
                     response = requests.post(rag_endpoint, json=payload)
                     
                     if response.status_code == 200:
                         answer = response.json()
                         st.success("Réponse trouvée !")
                         st.write("**Réponse :**")
-                        st.write(answer.get("response", answer))
+                        
+                        # Extract the actual answer from the nested structure
+                        if "answer" in answer and "answer" in answer["answer"]:
+                            final_answer = answer["answer"]["answer"]
+                            st.write(final_answer)
+                        else:
+                            st.write(answer)
                     else:
                         st.error(
                             f"Erreur lors de la requête: "
@@ -402,51 +413,3 @@ st.markdown(footer_css, unsafe_allow_html=True)
 st.markdown(footer_html, unsafe_allow_html=True)
 
 
-if __name__ == "__main__":
-    """Test the graph functionality with COLAS FRANCE."""
-    print("Testing GraphPlotBuilder with COLAS FRANCE...")
-    
-    try:
-        # Initialize GraphPlotBuilder
-        builder = GraphPlotBuilder()
-        
-        # Test with sample SIREN
-        entity_siren = '552015228'  # Example SIREN
-        
-        print(f"Creating focused graph for SIREN {entity_siren}...")
-        
-        # Create focused graph
-        graph_data = builder.create_focused_graph(
-            entity_siren=entity_siren,
-            min_contract_amount=0
-        )
-        
-        if graph_data:
-            print("✓ Successfully created focused graph")
-            
-            # Generate visualization
-            output_path = "test_colas_france_graph.html"
-            builder.plot_focused_graph(
-                graph_data=graph_data,
-                output_path=output_path,
-                physics_enabled=True
-            )
-            
-            # Show statistics
-            contract_data = graph_data['contract_data']
-            print(f"Central entity: {graph_data['central_entity']}")
-            print(f"Number of contracts: {len(contract_data)}")
-            print(f"Total amount: {contract_data['montant'].sum():,.2f}€")
-            print(f"Average amount: {contract_data['montant'].mean():,.2f}€")
-            print(f"Connected entities: {len(graph_data['nodes']) - 1}")
-            print(f"Graph saved to: {output_path}")
-            
-        else:
-            print(f"No contracts found for SIREN {entity_siren}")
-            
-    except Exception as e:
-        print(f"Error: {e}")
-        print("Make sure BigQuery environment variables are configured:")
-        print("- GCP_PROJECT")
-        print("- BQ_DATASET") 
-        print("- BQ_TABLE")
