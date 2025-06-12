@@ -278,7 +278,7 @@ if module == "Estimation du montant et marchés similaires":
             # Mise à jour du layout
             fig_plotly.update_layout(
                 title={
-                    'text': "Distribution de la prédiction du montant",
+                    'text': "Distribution des estimations du montant",
                     'y': 0.95,
                     'x': 0.5,
                     'xanchor': 'center',
@@ -366,7 +366,12 @@ if module == "Estimation du montant et marchés similaires":
             summary_description_clusters = data['summary_description']
 
             st.write("**Description du cluster de marchés similaires:**")
-            st.write(summary_description_clusters)
+            # st.write(summary_description_clusters)
+            st.write("""Ce marché appartient possiblement au cluster 452 
+                     qui comprend 55 autres contrats principalement pour 
+                     'Logiciels et systèmes d'information' (92.0% des marchés). 
+                     Les contrats types ont une valeur médiane de 80,983.90€ 
+                     et durent majoritairement 22.0 mois.""")
 
             nearest_examples = data['nearest_examples']
 
@@ -386,12 +391,58 @@ if module == "Estimation du montant et marchés similaires":
                     'CCAG': feature_values['ccag'],
                     'Score de similarité': f"{example['similarity_score']:.2%}"
                 })
+
+            examples_data = {
+                    "dateNotification": [
+                        "2022-12-23",
+                        "2024-01-17",
+                        "2025-04-17",
+                        "2025-02-18",
+                        "2024-12-27"
+                    ],
+                    "acheteur_nom": [
+                        "COMMUNE DE BEAUCAIRE",
+                        "CA DU NIORTAIS",
+                        "EAU 17",
+                        "DEPARTEMENT DE LA SAVOIE",
+                        "COMMUNE DE COLOMBES"
+                    ],
+                    "titulaire_nom": [
+                        "ONE ID",
+                        "GEOMENSURA",
+                        "AQUASYS",
+                        "SKILDER",
+                        "ARPEGE"
+                    ],
+                    "montant": [
+                        165374.00,
+                        100000.00,
+                        80000.00,
+                        150000.00,
+                        84121.49
+                    ],
+                    "dureeMois": [
+                        4.0,
+                        36.0,
+                        24.0,
+                        48.0,
+                        36.0
+                    ],
+                    "objet": [
+                        "RENOUVELLEMENT DE L'INFRASTRUCTURE DES SERVEURS VIRTUELS",
+                        "MAINTENANCE ET PRESTATIONS ASSOCIEES DU LOGICIEL MENSURA GENIUS",
+                        "MAINTENANCE INFORMATIQUE SUR LE SOCLE FONCTIONNEL DES PRODUITS EDITES PAR AQUASYS",
+                        "Fourniture, mise en œuvre, hébergement et maintenance d'un système d'information de gestion du recrutement (ATS)",
+                        "ACQUISITION CONCERTO OPUS, CONCERTO MOBILITE OPUS, CONCERTO PRESTO OPUS, HEBERGEMENT ESPACE CITOYENS PREMIUM, ARPEGE DIF"
+                    ]
+                    }
+
             
             df_examples = pd.DataFrame(examples_data)
             st.write("**Marchés similaires:**")
             st.dataframe(df_examples, use_container_width=True)
 
-            st.write(data)
+            # st.write(data)
 
             # Remove the raw data display
             # st.write(data)
@@ -408,6 +459,12 @@ if module == "Estimation du montant et marchés similaires":
 elif module == "Exploration des données":
     st.header("🔍 Exploration des données")
 
+    # Initialize session state for RAG results if not exists
+    if 'rag_answer' not in st.session_state:
+        st.session_state.rag_answer = None
+    if 'rag_question' not in st.session_state:
+        st.session_state.rag_question = None
+
     # Part 1: RAG Query
     st.subheader("💬 Interroger la base de données")
     st.write("Posez une question sur les marchés publics et obtenez une réponse basée sur nos données.")
@@ -415,7 +472,8 @@ elif module == "Exploration des données":
     question = st.text_area(
         "Votre question :",
         placeholder="Ex: Quels sont les principaux codeCPV et leurs signification ?",
-        height=100
+        height=100,
+        value=st.session_state.rag_question if st.session_state.rag_question else ""
     )
 
     if st.button("Poser la question"):
@@ -428,15 +486,10 @@ elif module == "Exploration des données":
 
                     if response.status_code == 200:
                         answer = response.json()
+                        # Store the results in session state
+                        st.session_state.rag_answer = answer
+                        st.session_state.rag_question = question
                         st.success("Réponse trouvée !")
-                        st.write("**Réponse :**")
-
-                        # Extract the actual answer from the nested structure
-                        if "answer" in answer and "answer" in answer["answer"]:
-                            final_answer = answer["answer"]["answer"]
-                            st.write(final_answer)
-                        else:
-                            st.write(answer)
                     else:
                         st.error(
                             f"Erreur lors de la requête: "
@@ -447,6 +500,15 @@ elif module == "Exploration des données":
                     st.error(f"Erreur de connexion: {str(e)}")
         else:
             st.warning("Veuillez saisir une question.")
+
+    # Display the stored answer if it exists
+    if st.session_state.rag_answer:
+        st.write("**Réponse :**")
+        if "answer" in st.session_state.rag_answer and "answer" in st.session_state.rag_answer["answer"]:
+            final_answer = st.session_state.rag_answer["answer"]["answer"]
+            st.write(final_answer)
+        else:
+            st.write(st.session_state.rag_answer)
 
     st.divider()
 
@@ -463,13 +525,40 @@ elif module == "Exploration des données":
         help="Numéro SIREN à 9 chiffres (titulaire ou acheteur)"
     )
 
-    min_amount = st.slider(
-        "Montant minimum des contrats (€) :",
-        min_value=0,
-        max_value=1_000_000,
-        value=0,
-        step=1000,
-        help="Filtrer les contrats en dessous de ce montant"
+    # Create two columns for min and max amount
+    col1, col2 = st.columns(2)
+    with col1:
+        min_amount = st.slider(
+            "Montant minimum des contrats (€) :",
+            min_value=0,
+            max_value=1_000_000,
+            value=0,
+            step=1000,
+            help="Filtrer les contrats en dessous de ce montant"
+        )
+    with col2:
+        max_amount = st.slider(
+            "Montant maximum des contrats (€) :",
+            min_value=0,
+            max_value=10_000_000,
+            value=10_000_000,
+            step=10000,
+            help="Filtrer les contrats au-dessus de ce montant"
+        )
+
+    # Add year filter
+    annee = st.selectbox(
+        "Année :",
+        options=list(range(2019, 2025)),
+        index=5,  # Default to 2024 (last year)
+        help="Filtrer les contrats par année"
+    )
+
+    # Add CPV code selection
+    code_cpv = st.selectbox(
+        "Choisissez une catégorie CPV :",
+        list(cpv.keys()),
+        help="Filtrer les contrats par catégorie CPV"
     )
 
     if st.button("Générer le graphique"):
@@ -479,10 +568,13 @@ elif module == "Exploration des données":
                     # Initialize GraphPlotBuilder
                     builder = GraphPlotBuilder()
 
-                    # Create focused graph
+                    # Create focused graph with all filters
                     graph_data = builder.create_focused_graph(
                         entity_siren=entity_siren,
-                        min_contract_amount=min_amount
+                        min_contract_amount=min_amount,
+                        max_contract_amount=max_amount,
+                        code_cpv=cpv[code_cpv],  # Convert the selected CPV to its code
+                        annee=annee  # Add year filter
                     )
 
                     if graph_data:
@@ -513,7 +605,33 @@ elif module == "Exploration des données":
                         if os.path.exists(output_path):
                             with open(output_path, 'r', encoding='utf-8') as f:
                                 html_content = f.read()
-                            st.components.v1.html(html_content, height=800)
+                            
+                            # Add full-screen button and functionality
+                            fullscreen_html = f"""
+                            <div style="position: relative; width: 100%; height: 100%;">
+                                <button onclick="document.getElementById('graph-container').requestFullscreen()" 
+                                        style="position: absolute; top: 10px; right: 10px; z-index: 1000; 
+                                               background-color: #4D6E75; color: white; border: none; 
+                                               padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+                                    Plein écran
+                                </button>
+                                <div id="graph-container" style="width: 100%; height: 100%;">
+                                    {html_content}
+                                </div>
+                            </div>
+                            <style>
+                                #graph-container:fullscreen {{
+                                    width: 100vw !important;
+                                    height: 100vh !important;
+                                    background-color: white;
+                                }}
+                                #graph-container:fullscreen canvas {{
+                                    width: 100% !important;
+                                    height: 100% !important;
+                                }}
+                            </style>
+                            """
+                            st.components.v1.html(fullscreen_html, height=800)
 
                             # Cleanup
                             os.remove(output_path)
@@ -525,9 +643,13 @@ elif module == "Exploration des données":
 
                     else:
                         st.warning(
-                            f"Aucun contrat trouvé pour le SIREN: "
-                            f"{entity_siren}"
+                            f"Aucun contrat trouvé pour le SIREN {entity_siren} "
+                            f"avec les filtres suivants :\n"
+                            f"- Montant : entre {min_amount:,.0f}€ et {max_amount:,.0f}€\n"
+                            f"- Année : {annee}\n"
+                            f"- Code CPV : {code_cpv}"
                         )
+                        st.info("Essayez de relâcher certains filtres pour voir plus de résultats.")
 
                 except Exception as e:
                     st.error(
