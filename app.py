@@ -251,8 +251,7 @@ if module == "Estimation du montant et marchés similaires":
         if response.status_code == 200:
             print(response)
             data = response.json()
-            st.write(data.keys())
-            print(data)
+            st.write(data["summary_description"])
         else:
             st.error(f"Erreur lors de la récupération des marchés similaires. "
                     f"Code d'erreur: {response.status_code}")
