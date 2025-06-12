@@ -44,85 +44,93 @@ class GraphPlotBuilder:
             logger.warning("BigQuery client not available or project not "
                            "configured")
     
-    def load_data_from_bigquery(self, entity_name: str,
-                                entity_type: str = 'titulaire'
-                                ) -> pd.DataFrame:
+    def load_data_from_bigquery(self, entity_siren: str
+                                ) -> tuple[pd.DataFrame, str]:
         """Load procurement data from BigQuery for a specific entity.
         
         Args:
-            entity_name: Name of the entity to focus on
-            entity_type: Either 'titulaire' or 'acheteur'
+            entity_siren: SIREN number of the entity to focus on
         
         Returns:
-            DataFrame with contracts related to the specified entity
+            Tuple of (DataFrame with contracts, entity_type)
         """
         if not self.client:
             raise ValueError("BigQuery client not available. Check your "
                              "configuration.")
         
-        if entity_type not in ['titulaire', 'acheteur']:
-            raise ValueError("entity_type must be either 'titulaire' or "
-                             "'acheteur'")
-        
-        # Build the query based on entity type
-        if entity_type == 'titulaire':
-            where_clause = f"titulaire_nom = '{entity_name}'"
-        else:  # acheteur
-            where_clause = f"acheteur_nom = '{entity_name}'"
-        
-        query = f"""
-            SELECT *
+        # Query for both titulaire and acheteur to determine entity type
+        query_titulaire = f"""
+            SELECT *, 'titulaire' as entity_type
             FROM {self.gcp_project}.{self.bq_dataset}.{self.bq_table}
-            WHERE {where_clause}
+            WHERE CAST(titulaire_siren AS STRING) = '{entity_siren}'
         """
         
-        logger.info(f"Querying BigQuery for {entity_type}: {entity_name}")
-        logger.info(f"Query: {query}")
+        query_acheteur = f"""
+            SELECT *, 'acheteur' as entity_type
+            FROM {self.gcp_project}.{self.bq_dataset}.{self.bq_table}
+            WHERE CAST(acheteur_siren AS STRING) = '{entity_siren}'
+        """
+        
+        logger.info(f"Querying BigQuery for SIREN: {entity_siren}")
         
         try:
-            query_job = self.client.query(query)
-            result = query_job.result()
-            df = result.to_dataframe()
+            # Try titulaire first
+            query_job_titulaire = self.client.query(query_titulaire)
+            df_titulaire = query_job_titulaire.result().to_dataframe()
             
-            logger.info(f"Retrieved {len(df)} contracts for {entity_name}")
-            return df
+            # Try acheteur
+            query_job_acheteur = self.client.query(query_acheteur)
+            df_acheteur = query_job_acheteur.result().to_dataframe()
+            
+            # Determine which has data and return accordingly
+            if not df_titulaire.empty and not df_acheteur.empty:
+                # SIREN appears in both - prefer titulaire
+                logger.info(f"SIREN {entity_siren} found as both titulaire and acheteur, using titulaire")
+                df = df_titulaire
+                entity_type = 'titulaire'
+            elif not df_titulaire.empty:
+                logger.info(f"SIREN {entity_siren} found as titulaire")
+                df = df_titulaire
+                entity_type = 'titulaire'
+            elif not df_acheteur.empty:
+                logger.info(f"SIREN {entity_siren} found as acheteur")
+                df = df_acheteur
+                entity_type = 'acheteur'
+            else:
+                logger.warning(f"No contracts found for SIREN {entity_siren}")
+                return pd.DataFrame(), None
+            
+            logger.info(f"Retrieved {len(df)} contracts for {entity_siren} as {entity_type}")
+
+
+            selected_columns = ['dateNotification', 'acheteur_nom', 'acheteur_siren',
+                                'titulaire_nom', 'titulaire_siren', 'montant', 
+                                'dureeMois', 'codeCPV', 'procedure', 'objet']
+        
+            df = df[selected_columns]
+
+            return df, entity_type
             
         except Exception as e:
             logger.error(f"Error querying BigQuery: {e}")
             raise
 
-    def load_data(self, data_path: str) -> pd.DataFrame:
-        """Load procurement data from CSV files."""
-        logger.info(f"Loading data from {data_path}")
-
-        data_file_path = os.path.join(data_path, 'data_clean.csv')
-        X = pd.read_csv(data_file_path, encoding='utf-8')
-        # Basic data validation
-        selected_columns = ['dateNotification', 'acheteur_nom',
-                            'titulaire_nom', 'montant', 'dureeMois',
-                            'codeCPV', 'procedure', 'objet']
-        
-        X = X[selected_columns]
-        
-        return X
-
-    def create_focused_graph(self, entity_name: str, entity_type: str = 'titulaire',
+    def create_focused_graph(self, entity_siren: str,
                             min_contract_amount: float = 0) -> dict:
         """Create a graph focused on a specific entity using BigQuery data.
         
         Args:
-            entity_name: Name of the central entity
-            entity_type: Either 'titulaire' or 'acheteur'
+            entity_siren: SIREN number of the central entity
             min_contract_amount: Minimum contract amount to include
         
         Returns:
             Graph data dictionary optimized for focused visualization
         """
-        # Load data from BigQuery
-        X_filtered = self.load_data_from_bigquery(entity_name, entity_type)
+        # Load data from BigQuery and determine entity type
+        X_filtered, entity_type = self.load_data_from_bigquery(entity_siren)
         
-        if X_filtered.empty:
-            logger.warning(f"No contracts found for {entity_type}: {entity_name}")
+        if X_filtered.empty or entity_type is None:
+            logger.warning(f"No contracts found for SIREN: {entity_siren}")
             return None
         
         # Ensure required columns exist
@@ -150,13 +158,15 @@ class GraphPlotBuilder:
         # Create focused graph structure
         if entity_type == 'titulaire':
             # Central node is the supplier, connected nodes are buyers
-            central_entity = entity_name
+            # Get the actual name for display from the first matching record
+            central_entity = X_filtered['titulaire_nom'].iloc[0] if not X_filtered.empty else f"SIREN {entity_siren}"
             connected_entities = X_filtered['acheteur_nom'].unique().tolist()
             central_type = 1  # Supplier
             connected_type = 0  # Buyers
         else:
             # Central node is the buyer, connected nodes are suppliers
-            central_entity = entity_name
+            # Get the actual name for display from the first matching record
+            central_entity = X_filtered['acheteur_nom'].iloc[0] if not X_filtered.empty else f"SIREN {entity_siren}"
             connected_entities = X_filtered['titulaire_nom'].unique().tolist()
             central_type = 0  # Buyer
             connected_type = 1  # Suppliers
@@ -199,13 +209,22 @@ class GraphPlotBuilder:
         # Compute node features
         logger.info("Computing node features...")
         
-        # Central node features
+        # Central node features with proper NaN handling
         central_contracts = X_filtered
+        central_total_amount = central_contracts['montant'].sum()
+        central_total_amount = float(central_total_amount) if pd.notna(central_total_amount) else 0.0
+        
+        central_mean_amount = central_contracts['montant'].mean()
+        central_mean_amount = float(central_mean_amount) if pd.notna(central_mean_amount) else 0.0
+        
+        central_mean_duration = central_contracts['dureeMois'].mean()
+        central_mean_duration = float(central_mean_duration) if pd.notna(central_mean_duration) else 0.0
+        
         central_features = [
             len(central_contracts),
-            float(central_contracts['montant'].sum()),
-            float(central_contracts['montant'].mean()),
-            float(central_contracts['dureeMois'].mean()) if central_contracts['dureeMois'].notna().any() else 0
+            central_total_amount,
+            central_mean_amount,
+            central_mean_duration
         ]
         
         # Connected nodes features
@@ -218,11 +237,21 @@ class GraphPlotBuilder:
             else:
                 entity_contracts = X_filtered[X_filtered['titulaire_nom'] == connected_entity]
             
+            # Calculate features with proper NaN handling
+            total_amount = entity_contracts['montant'].sum()
+            total_amount = float(total_amount) if pd.notna(total_amount) else 0.0
+            
+            mean_amount = entity_contracts['montant'].mean()
+            mean_amount = float(mean_amount) if pd.notna(mean_amount) else 0.0
+            
+            mean_duration = entity_contracts['dureeMois'].mean()
+            mean_duration = float(mean_duration) if pd.notna(mean_duration) else 0.0
+            
             features = [
                 len(entity_contracts),
-                float(entity_contracts['montant'].sum()),
-                float(entity_contracts['montant'].mean()),
-                float(entity_contracts['dureeMois'].mean()) if entity_contracts['dureeMois'].notna().any() else 0
+                total_amount,
+                mean_amount,
+                mean_duration
             ]
             node_features.append(features)
             node_types.append(connected_type)
@@ -244,189 +273,6 @@ class GraphPlotBuilder:
         
         logger.info(f"Created focused graph with {len(all_nodes)} nodes and {len(edges)} edges")
         return graph_data
-
-    def create_graph(self, X: pd.DataFrame,
-                     min_contract_amount: float = 20_000) -> dict:
-        """Transform procurement data into graph structure.
-        
-        Args:
-            X: DataFrame from load_data with original columns
-            min_contract_amount: Minimum contract amount to include
-        """
-        logger.info("Creating graph structure from procurement data...")
-        
-        # Remove rows with NaN buyer or supplier names
-        valid_mask = (X['acheteur_nom'].notna() &
-                      X['titulaire_nom'].notna())
-        X_filtered = X[valid_mask].copy()
-        
-        # Filter by minimum contract amount if specified
-        if min_contract_amount > 0:
-            amount_mask = X_filtered['montant'] >= min_contract_amount
-            X_filtered = X_filtered[amount_mask].copy()
-            logger.info(f"Filtered contracts with amount >= "
-                        f"{min_contract_amount:,.2f}€")
-        
-        logger.info(f"Filtered to {len(X_filtered)} valid contracts "
-                    f"(removed {(~valid_mask).sum()} contracts with "
-                    f"missing names)")
-        
-        # Create unique identifiers for buyers and suppliers
-        buyers = X_filtered['acheteur_nom'].unique()
-        suppliers = X_filtered['titulaire_nom'].unique()
-        
-        # Create node mappings
-        buyer_to_id = {buyer: i for i, buyer in enumerate(buyers)}
-        supplier_to_id = {supplier: i + len(buyers)
-                          for i, supplier in enumerate(suppliers)}
-        
-        # Combine all nodes
-        all_nodes = list(buyers) + list(suppliers)
-        
-        logger.info("Creating edges from procurement data...")
-        
-        # OPTIMIZATION: Vectorized edge creation
-        buyer_ids = X_filtered['acheteur_nom'].map(buyer_to_id).values
-        supplier_ids = X_filtered['titulaire_nom'].map(supplier_to_id).values
-        edges = [(int(b), int(s)) for b, s in zip(buyer_ids, supplier_ids)]
-        
-        # OPTIMIZATION: Vectorized edge features creation
-        edge_features_raw = (X_filtered[['montant', 'dureeMois']]
-                             .fillna(0).values.tolist())
-        # Convert numpy types to Python types for JSON serialization
-        edge_features = [[float(x) for x in row] for row in edge_features_raw]
-        
-        # Store contract IDs for analysis
-        contract_ids = [int(x) for x in X_filtered.index.tolist()]
-        
-        logger.info("Computing node features with vectorized operations...")
-        
-        # OPTIMIZATION: Bulk computation using groupby
-        buyer_features, supplier_features = (
-            self._compute_bulk_node_features(X_filtered))
-        
-        # Build node features arrays
-        node_features = []
-        node_types = []
-        
-        # Buyer features
-        for buyer in buyers:
-            features = buyer_features.get(buyer, [0, 0, 0, 0])
-            # Convert numpy types to Python types for JSON serialization
-            features = [float(x) if isinstance(x, (int, float)) else x for x in features]
-            node_features.append(features)
-            node_types.append(0)  # Buyer
-        
-        # Supplier features
-        for supplier in suppliers:
-            features = supplier_features.get(supplier, [0, 0, 0, 0])
-            # Convert numpy types to Python types for JSON serialization
-            features = [float(x) if isinstance(x, (int, float)) else x for x in features]
-            node_features.append(features)
-            node_types.append(1)  # Supplier
-        
-        # Create contract data for analysis
-        contract_data = X_filtered[['acheteur_nom', 'titulaire_nom',
-                                    'montant', 'codeCPV', 'procedure',
-                                    'dureeMois']].copy()
-        
-        graph_data = {
-            'nodes': all_nodes,
-            'edges': edges,
-            'node_features': node_features,
-            'edge_features': edge_features,
-            'node_types': node_types,
-            'buyer_to_id': buyer_to_id,
-            'supplier_to_id': supplier_to_id,
-            'contract_ids': contract_ids,
-            'contract_data': contract_data
-        }
-
-        # Save the graph data to a pickle file
-        data_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'data')
-        os.makedirs(data_dir, exist_ok=True)
-        graph_file_path = os.path.join(data_dir, 'graph_data_clean.pkl')
-        with open(graph_file_path, 'wb') as f:
-            pickle.dump(graph_data, f)
-        
-        return graph_data
-
-    def _compute_bulk_node_features(self, data: pd.DataFrame) -> tuple:
-        """Compute features for all nodes using vectorized operations."""
-        
-        # Compute buyer features using groupby (much faster)
-        buyer_stats = data.groupby('acheteur_nom').agg({
-            'montant': ['count', 'sum', 'mean'],
-            'dureeMois': 'mean'
-        }).round(2)
-        
-        # Flatten column names
-        buyer_stats.columns = ['contract_count', 'total_amount',
-                               'avg_amount', 'avg_duration']
-        buyer_stats = buyer_stats.fillna(0)
-        
-        # Convert to dictionary format
-        buyer_features = {}
-        for buyer in buyer_stats.index:
-            row = buyer_stats.loc[buyer]
-            buyer_features[buyer] = [
-                int(float(row['contract_count'])),
-                float(row['total_amount']),
-                float(row['avg_amount']),
-                float(row['avg_duration'])
-            ]
-        
-        # Compute supplier features using groupby
-        supplier_stats = data.groupby('titulaire_nom').agg({
-            'montant': ['count', 'sum', 'mean'],
-            'dureeMois': 'mean'
-        }).round(2)
-        
-        # Flatten column names
-        supplier_stats.columns = ['contract_count', 'total_amount',
-                                  'avg_amount', 'avg_duration']
-        supplier_stats = supplier_stats.fillna(0)
-        
-        # Convert to dictionary format
-        supplier_features = {}
-        for supplier in supplier_stats.index:
-            row = supplier_stats.loc[supplier]
-            supplier_features[supplier] = [
-                int(float(row['contract_count'])),
-                float(row['total_amount']),
-                float(row['avg_amount']),
-                float(row['avg_duration'])
-            ]
-        
-        return buyer_features, supplier_features
-
-    def _compute_node_features(self, data: pd.DataFrame,
-                               entity_col: str, entities: list) -> dict:
-        """Compute features for nodes based on their contracts."""
-        features = {}
-        
-        for entity in entities:
-            entity_data = data[data[entity_col] == entity]
-            
-            # Basic statistics
-            contract_count = len(entity_data)
-            total_amount = (entity_data['montant'].sum()
-                            if len(entity_data) > 0 else 0)
-            avg_amount = (entity_data['montant'].mean()
-                          if len(entity_data) > 0 else 0)
-            avg_duration = (entity_data['dureeMois'].mean()
-                            if len(entity_data) > 0 else 0)
-            
-            features[entity] = [
-                contract_count,
-                total_amount,
-                avg_amount,
-                avg_duration
-            ]
-        
-        return features
 
     def plot_focused_graph(self, graph_data: dict,
                           output_path: str = "focused_graph_visualization.html",
@@ -454,28 +300,37 @@ class GraphPlotBuilder:
         entity_type = graph_data['entity_type']
         
         # Create network with larger size
-        net = Network(height="1000px", width="100%", directed=False)
+        net = Network(height="800px", width="100%", directed=False)
         
         # Add nodes with special handling for the central node
         for i, (node_name, features, node_type) in enumerate(
                 zip(nodes, node_features, node_types)):
             
             # Set node properties based on type and position
+            total_amount = features[1] if len(features) > 1 else 0.0
+            total_amount = total_amount if not pd.isna(total_amount) else 0.0
+            
             if i == 0:  # Central node
                 color = "#ffaa00"  # Orange for central node
-                size = 60  # Large size for central node
+                # Size based on total amount for central node
+                size = min(50 + (total_amount / 50000), 100)  # More dramatic scaling
                 shape = "star" if entity_type == 'titulaire' else "diamond"
                 type_label = f"Central {entity_type.title()}"
+                logger.info(f"Central node {node_name}: €{total_amount:,.2f} -> size {size}")
             elif node_type == 0:  # Buyer
                 color = "#ff9999"  # Light red
                 shape = "box"
-                size = min(20 + features[0] * 2, 40)
+                # Size based on total amount - more dramatic scaling
+                size = min(10 + (total_amount / 50000), 70)  # Scale by 50k euros
                 type_label = "Acheteur"
+                logger.info(f"Buyer {node_name}: €{total_amount:,.2f} -> size {size}")
             else:  # Supplier
                 color = "#99ccff"  # Light blue
                 shape = "circle"
-                size = min(20 + features[0] * 2, 40)
+                # Size based on total amount - more dramatic scaling
+                size = min(10 + (total_amount / 50000), 70)  # Scale by 50k euros
                 type_label = "Titulaire"
+                logger.info(f"Supplier {node_name}: €{total_amount:,.2f} -> size {size}")
             
             # Create tooltip with node information
             title = (f"{type_label}: {node_name}\n"
@@ -516,14 +371,14 @@ class GraphPlotBuilder:
             {
               "physics": {
                 "enabled": true,
-                "stabilization": {"iterations": 100},
+                "stabilization": {"iterations": 40},
                 "barnesHut": {
-                  "gravitationalConstant": -2000,
+                  "gravitationalConstant": -3000,
                   "centralGravity": 0.3,
-                  "springLength": 200,
+                  "springLength": 500,
                   "springConstant": 0.02,
-                  "damping": 0.4,
-                  "avoidOverlap": 0.8
+                  "damping": 0.2,
+                  "avoidOverlap": 0.1
                 }
               },
               "interaction": {
@@ -543,191 +398,7 @@ class GraphPlotBuilder:
         logger.info(f"Connected entities: {len(nodes) - 1}")
         logger.info(f"Total contracts: {len(edges)}")
 
-    def plot_graph(self, graph_data: dict,
-                   output_path: str = "graph_visualization.html",
-                   focus_node: Optional[Union[str, int]] = None,
-                   max_nodes: int = 100,
-                   max_edges: int = 200,
-                   physics_enabled: bool = True) -> None:
-        """Visualize the graph using pyvis network.
-        
-        Args:
-            graph_data: Graph data dictionary from create_graph
-            output_path: Path to save the HTML visualization
-            focus_node: Node name or ID to zoom/focus on
-            max_nodes: Maximum number of nodes to display
-            max_edges: Maximum number of edges to display
-            physics_enabled: Whether to enable physics simulation
-        """
-        logger.info("Creating graph visualization with pyvis...")
-        
-        # Get graph components
-        nodes = graph_data['nodes']
-        edges = graph_data['edges']
-        node_features = graph_data['node_features']
-        node_types = graph_data['node_types']
-        edge_features = graph_data['edge_features']
-        
-        # Limit nodes if necessary
-        if len(nodes) > max_nodes:
-            logger.info(f"Limiting display to {max_nodes} nodes "
-                        f"(total: {len(nodes)})")
-            # Get top nodes by contract count
-            node_importance = [features[0] for features in node_features]
-            top_indices = sorted(range(len(node_importance)),
-                                 key=lambda i: node_importance[i],
-                                 reverse=True)[:max_nodes]
-            
-            # Filter nodes and features
-            nodes = [nodes[i] for i in top_indices]
-            node_features = [node_features[i] for i in top_indices]
-            node_types = [node_types[i] for i in top_indices]
-            
-            # Create mapping for filtered nodes
-            old_to_new = {old_idx: new_idx
-                          for new_idx, old_idx in enumerate(top_indices)}
-            
-            # Filter edges to only include nodes in our subset
-            filtered_edges = []
-            filtered_edge_features = []
-            for i, edge in enumerate(edges):
-                if edge[0] in old_to_new and edge[1] in old_to_new:
-                    filtered_edges.append((old_to_new[edge[0]],
-                                           old_to_new[edge[1]]))
-                    filtered_edge_features.append(edge_features[i])
-            edges = filtered_edges
-            edge_features = filtered_edge_features
-        
-        # Limit total edges if needed
-        if len(edges) > max_edges:
-            logger.info(f"Limiting edges to {max_edges} (total: {len(edges)})")
-            
-            # Create list of (edge, features, amount) for sorting
-            edge_data = []
-            for i, (edge, features) in enumerate(zip(edges, edge_features)):
-                amount = features[0] if len(features) > 0 else 0
-                edge_data.append((edge, features, amount))
-            
-            # Sort by contract amount (descending) and limit
-            edge_data.sort(key=lambda x: x[2], reverse=True)
-            edge_data = edge_data[:max_edges]
-            
-            # Extract filtered edges and features
-            edges = [item[0] for item in edge_data]
-            edge_features = [item[1] for item in edge_data]
-            
-            logger.info(f"Using {len(edges)} edges after filtering")
-        
-        # Create network with larger size
-        net = Network(height="1000px", width="100%", directed=False)
-
-        # net = Network(height="600px", width="100%", directed=False,
-        #                select_menu=True, filter_menu=True)
-        
-        # Create initial positions to avoid center clustering
-        logger.info("Computing initial node positions...")
-        G = nx.Graph()
-        G.add_nodes_from(range(len(nodes)))
-        G.add_edges_from(edges)
-        
-        # Use spring layout for initial positioning with more spacing
-        try:
-            pos = nx.spring_layout(G, k=5, iterations=50, seed=42)
-        except Exception:
-            # Fallback to circular layout if spring layout fails
-            pos = nx.circular_layout(G)
-        
-        # Scale positions to fill the canvas better with much larger spread
-        scale_factor = 3000  # Dramatically increased for much larger spacing
-        for node_id in pos:
-            pos[node_id] = (pos[node_id][0] * scale_factor,
-                            pos[node_id][1] * scale_factor)
-        
-        # Add nodes to the network with initial positions
-        for i, (node_name, features, node_type) in enumerate(
-                zip(nodes, node_features, node_types)):
-            
-            # Set node properties based on type
-            if node_type == 0:  # Buyer
-                color = "#ff9999"  # Light red
-                shape = "box"
-                type_label = "Acheteur"
-            else:  # Supplier
-                color = "#99ccff"  # Light blue
-                shape = "circle"
-                type_label = "Titulaire"
-            
-            # Scale node size based on contract count
-            size = min(15 + features[0] * 3, 60)
-            
-            # Create tooltip with node information
-            title = (f"{type_label}: {node_name}\n"
-                     f"Contracts: {features[0]}\n"
-                     f"Total Amount: {features[1]:,.2f}€\n"
-                     f"Avg Amount: {features[2]:,.2f}€\n"
-                     f"Avg Duration: {features[3]:.1f} months")
-            
-            # Highlight focus node if specified
-            if focus_node is not None:
-                if ((isinstance(focus_node, str) and
-                     node_name == focus_node) or
-                        (isinstance(focus_node, int) and i == focus_node)):
-                    color = "#ffff00"  # Yellow for focus
-                    size *= 1.5
-            
-            # Get initial position for this node with wider range
-            x, y = pos.get(i, (random.uniform(-1500, 1500),
-                               random.uniform(-1500, 1500)))
-            
-            net.add_node(i, label=str(node_name)[:20], color=color,
-                         size=size, shape=shape, title=title,
-                         x=x, y=y, fixed=False)
-        
-        # Add edges to the network with variable width
-        for i, edge in enumerate(edges):
-            # Scale edge width based on contract amount
-            if i < len(edge_features):
-                features_list = edge_features[i]
-                amount = features_list[0] if len(features_list) > 0 else 1
-                width = min(1 + amount / 50000, 5)  # Scale width
-            else:
-                width = 1
-            net.add_edge(edge[0], edge[1], width=width)
-        
-        # Configure physics for stability
-        if physics_enabled:
-            net.set_options("""
-            {
-              "physics": {
-                "enabled": true,
-                "stabilization": {"iterations": 50},
-                "barnesHut": {
-                  "gravitationalConstant": -8000,
-                  "centralGravity": 0.01,
-                  "springLength": 300,
-                  "springConstant": 0.005,
-                  "damping": 0.3,
-                  "avoidOverlap": 1.0
-                }
-              },
-              "interaction": {
-                "dragNodes": true,
-                "dragView": true,
-                "zoomView": true
-              }
-            }
-            """)
-        else:
-            net.set_options('{"physics": {"enabled": false}}')
-        
-        # Save the visualization
-        net.save_graph(output_path)
-        logger.info(f"Graph visualization saved to {output_path}")
-        logger.info(f"Visualization created with {len(nodes)} nodes "
-                    f"and {len(edges)} edges")
-        if focus_node is not None:
-            logger.info(f"Focused on node: {focus_node}")
-
+    
 
 if __name__ == "__main__":
     """Test the GraphPlotBuilder functionality."""
@@ -749,27 +420,62 @@ if __name__ == "__main__":
             return False
         
         try:
-            # Test with a sample entity name
-            sample_entity = "COLAS FRANCE"
-            print(f"Testing focused graph creation for: {sample_entity}")
+            # Test with a sample SIREN number
+            # sample_siren = "216901231"  # COMMUNE DE LYON
+            sample_siren = "217401058" # COMMUNE DE DOUVAINE
+            print(f"Testing focused graph creation for SIREN: {sample_siren}")
             
-            # Test titulaire focus
+            # Test focused graph creation
             graph_data = builder.create_focused_graph(
-                entity_name=sample_entity,
-                entity_type="titulaire",
-                min_contract_amount=1000
+                entity_siren=sample_siren,
+                min_contract_amount=40_000
             )
             
             if graph_data:
-                print("✓ Successfully created focused graph for titulaire")
+                print("✓ Successfully created focused graph")
+                output_file = "test_titulaire_graph.html"
                 builder.plot_focused_graph(
                     graph_data=graph_data,
-                    output_path="test_titulaire_graph.html"
+                    output_path=output_file
                 )
                 print("✓ Successfully generated visualization")
+                
+                # Open the HTML file in the default browser
+                import webbrowser
+                import subprocess
+                abs_path = os.path.abspath(output_file)
+                if os.path.exists(abs_path):
+                    print(f"✓ File exists at: {abs_path}")
+                    print(f"✓ Opening {output_file} in browser...")
+                    
+                    # Try different methods for WSL2 compatibility
+                    try:
+                        # Method 1: Try WSL integration with Windows browser
+                        if 'microsoft' in os.uname().release.lower():
+                            # Convert WSL path to Windows path
+                            result = subprocess.run(['wslpath', '-w', abs_path], 
+                                                  capture_output=True, text=True)
+                            if result.returncode == 0:
+                                windows_path = result.stdout.strip()
+                                print(f"Windows path: {windows_path}")
+                                webbrowser.open(f"file:///{windows_path}")
+                            else:
+                                raise Exception("WSL path conversion failed")
+                        else:
+                            # Standard Linux/Mac approach
+                            webbrowser.open(f"file://{abs_path}")
+                        
+                        print("✓ Browser opened successfully")
+                    except Exception as e:
+                        print(f"Error opening browser: {e}")
+                        print(f"Alternative: copy this path to your browser:")
+                        print(f"file://{abs_path}")
+                else:
+                    print(f"✗ File not found at: {abs_path}")
+                
                 return True
             else:
-                print(f"No contracts found for {sample_entity}")
+                print(f"No contracts found for SIREN {sample_siren}")
                 return False
                 
         except Exception as e:
@@ -843,19 +549,16 @@ if __name__ == "__main__":
         bigquery_success = test_bigquery_integration()
         
         # Test CSV functionality
-        csv_success = test_csv_functionality()
+        # csv_success = test_csv_functionality()
         
         print("\n" + "=" * 60)
         print("Test Results:")
         print(f"BigQuery Integration: {'✓ PASS' if bigquery_success else '✗ SKIP/FAIL'}")
-        print(f"CSV Functionality: {'✓ PASS' if csv_success else '✗ FAIL'}")
+        # print(f"CSV Functionality: {'✓ PASS' if csv_success else '✗ FAIL'}")
         
-        if csv_success:
-            print("\n✓ Core functionality working correctly!")
-            print("Generated test files:")
-            print("- test_general_graph.html")
-            if bigquery_success:
-                print("- test_titulaire_graph.html")
+
+        if bigquery_success:
+            print("- test_titulaire_graph.html")
         else:
             print("\n✗ Some tests failed. Check error messages above.")
             sys.exit(1)
