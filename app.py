@@ -223,7 +223,7 @@ if module == "Estimation du montant et marchés similaires":
             st.error("Erreur lors de l'estimation du montant. Veuillez vérifier les paramètres et réessayer.")
 
 
-    montant = st.number_input("Montant du marché (en euros)", min_value=0, value=0, step=1000, format="%d")
+    montant = st.number_input("Montant du marché (en euros)", min_value=0, value=40000, step=1000, format="%d")
 
     if st.button("Voir les marchés similaires"):
         params = {
@@ -234,8 +234,15 @@ if module == "Estimation du montant et marchés similaires":
             "nature": nature,
             "formePrix": formePrix,
             "ccag": ccag,
-            "codeCPV_2_3": Code_CPV
-            }
+            "codeCPV_2_3": cpv[Code_CPV],
+            "sousTraitanceDeclaree": 0.0,
+            "origineFrance": 0.0,
+            "marcheInnovant": 0.0,
+            "idAccordCadre": 0.0,
+            "typeGroupementOperateurs": "Pas de groupement",
+            "tauxAvance": 0.0,
+        }
+
         response = requests.post(endpoint_clusters, json=params)
         if response.status_code == 200:
             data = response.json()
