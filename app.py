@@ -249,8 +249,10 @@ if module == "Estimation du montant et marchés similaires":
 
         response = requests.post(endpoint_clusters, json=params)
         if response.status_code == 200:
+            print(response)
             data = response.json()
-            st.write(data)
+            st.write(data.keys())
+            print(data)
         else:
             st.error(f"Erreur lors de la récupération des marchés similaires. "
                     f"Code d'erreur: {response.status_code}")
