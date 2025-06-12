@@ -104,6 +104,50 @@ tranches_effectif = {
 }
 options = {v: k for k, v in tranches_effectif.items()}
 id = 10
+cpv_codes = [
+    [3000000, "Matériel et fournitures informatiques"],
+    [9000000, "Huiles lubrifiantes et agents lubrifiants"],
+    [15000000, "Produits alimentaires divers"],
+    [18000000, "Vêtements professionnels, vêtements de travail spéciaux et accessoires"],
+    [22000000, "Livres de bibliothèque"],
+    [30000000, "Matériel et fournitures informatiques"],
+    [31000000, "Modules"],
+    [32000000, "Système de surveillance vidéo"],
+    [33000000, "Papier hygiénique, mouchoirs, essuie-mains et serviettes de table"],
+    [34000000, "Véhicules à moteur"],
+    [37000000, "Instruments de musique, articles de sport, jeux, jouets, articles pour artisanat, articles pour travaux artistiques et accessoires"],
+    [39000000, "Caisses à compost"],
+    [42000000, "Chariots de manutention"],
+    [44000000, "Serrurerie"],
+    [45000000, "Travaux de charpente"],
+    [45100000, "Travaux de charpente"],
+    [45200000, "Travaux de charpente"],
+    [45300000, "Travaux de charpente"],
+    [45400000, "Travaux de charpente"],
+    [48000000, "Logiciels et systèmes d'information"],
+    [50000000, "Services de réparation et d'entretien de chauffage central"],
+    [55000000, "Services de colonies de vacances"],
+    [60000000, "Services spécialisés de transport routier de passagers"],
+    [64000000, "Services de courrier"],
+    [66000000, "Services d'assurance de véhicules à moteur"],
+    [71000000, "Services d'architecture"],
+    [71200000, "Services d'architecture"],
+    [71300000, "Services d'architecture"],
+    [71400000, "Services d'architecture"],
+    [71600000, "Services d'architecture"],
+    [72000000, "Services de maintenance et de réparation de logiciels"],
+    [74000000, "Services de conseil en développement"],
+    [75000000, "Prestations de services pour la collectivité"],
+    [77000000, "Réalisation et entretien d'espaces verts"],
+    [79000000, "Services d'impression et de livraison"],
+    [80000000, "Services de formation professionnelle"],
+    [85000000, "Services de crèches et garderies d'enfants"],
+    [90000000, "Service de gestion du réseau d'assainissement"],
+    [92000000, "Services de musées"],
+    [98000000, "Autres services"]
+]
+cpv = {f"{code} – {desc}": code for code, desc in cpv_codes}
+
 # Sidebar: Module selector
 module = st.sidebar.radio("Choix du module :", ["Exploration des données", "Estimation du montant et marchés similaires"])
 
@@ -114,14 +158,7 @@ if module == "Estimation du montant et marchés similaires":
     st.header("💰 Estimation du montant et marchés similaires")
     st.write("Utilisez ce module pour estimer le montant d'un futur marché public et trouver des marchés similaires.")
     st.write("Les champs obligatoires sont marqués d'un astérisque (*)")
-    Code_CPV = st.selectbox('Code CPV', [
-        3000000,  9000000, 15000000, 18000000, 22000000, 30000000, 31000000,
-        32000000, 33000000, 34000000, 37000000, 39000000, 42000000, 44000000,
-        45000000, 45100000, 45200000, 45300000, 45400000, 48000000, 50000000,
-        55000000, 60000000, 64000000, 66000000, 71000000, 71200000, 71300000,
-        71400000, 71600000, 72000000, 74000000, 75000000, 77000000, 79000000,
-        80000000, 85000000, 90000000, 92000000, 98000000
- ])
+    Code_CPV = st.selectbox("Choisissez une catégorie CPV :", list(cpv.keys()))
     DureeMois = st.slider('Estimation de la durée en mois*', 1, 48, 6)
     OffresRecues = st.number_input('Nombre d\'offres reçues*', min_value=0, max_value=100, value=3, step=1)
     ccag = st.selectbox('CCAG', ['Travaux', 'Fournitures courantes et services', 'Pas de CCAG', 'Autre'])
@@ -141,7 +178,7 @@ if module == "Estimation du montant et marchés similaires":
             "nature": nature,
             "formePrix": formePrix,
             "ccag": ccag,
-            "codeCPV_3": Code_CPV,
+            "codeCPV_3": cpv[Code_CPV],
             "acheteur_tranche_effectif" : options[effectif],
             "annee": 2025,
             "sousTraitanceDeclaree": 0,
@@ -155,30 +192,35 @@ if module == "Estimation du montant et marchés similaires":
         response = requests.post(endpoint_estimation, json=params)
         if response.status_code == 200:
             data = response.json()
-            # On récupère les prédictions de la première instance
-            prob_raw = data["prediction"][0]  # Liste de N valeurs
-            probabilities = np.array(prob_raw)
+            # Récupération des probabilités (1 seule prédiction ici)
+            probabilities = np.array(data["prediction"][0])
 
-            # Supposons 100 bins sur une échelle log (par exemple de 6 à 18 log-euros)
-            bins = np.linspace(6, 18, len(probabilities) + 1)  # len(bins) = N+1
+            # Génération des bins si pas fournis
+            bins = np.linspace(6, 18, len(probabilities) + 1)  # log scale
             bin_centers = 0.5 * (bins[:-1] + bins[1:])
+            montants = np.exp(bin_centers)  # retransforme en euros
 
-            # Création du DataFrame
+            # Construction du DataFrame
             df = pd.DataFrame({
-                'bin_center': np.exp(bin_centers),
+                'montant': montants,
                 'probability': probabilities
             })
             df['smoothed'] = df['probability'].rolling(window=10, center=True, min_periods=1).mean()
 
-            # Affichage avec Streamlit
-            fig, ax = plt.subplots(figsize=(12, 6))
-            sns.lineplot(data=df, x='bin_center', y='smoothed', label='Lissé', color='blue', ax=ax)
-            # sns.scatterplot(data=df, x='bin_center', y='probability', color='gray', alpha=0.5, label='Original', ax=ax)
+            # Trouver le montant le plus probable
+            peak_montant = df.loc[df['smoothed'].idxmax(), 'montant']
+
+            # Plot
+            fig, ax = plt.subplots(figsize=(10, 5))
+            sns.lineplot(data=df, x='montant', y='smoothed', color='blue', ax=ax)
             ax.set_title("Distribution prédite des montants")
-            ax.set_xlabel("Montant (€)")
+            ax.set_xlabel("Montant estimé (€)")
             ax.set_ylabel("Probabilité")
             ax.grid(True)
-            ax.legend()
+
+            # Centrer le graphique autour du pic
+            ax.set_xlim(peak_montant * 0.1, peak_montant * 2.5)
+
             st.pyplot(fig)
 
         else:
