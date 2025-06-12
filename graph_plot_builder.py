@@ -3,9 +3,11 @@ import os
 import logging
 from pyvis.network import Network
 import networkx as nx
+import json
 
 try:
     from google.cloud import bigquery
+    from google.oauth2 import service_account
     import streamlit as st
     BIGQUERY_AVAILABLE = True
 except ImportError:
@@ -34,18 +36,25 @@ class GraphPlotBuilder:
             self.gcp_project = gcp_project or st.secrets["gcp"]["GCP_PROJECT"]
             self.bq_dataset = bq_dataset or st.secrets["gcp"]["BQ_DATASET"]
             self.bq_table = bq_table or st.secrets["gcp"]["BQ_TABLE"]
+            
+            # Get service account info from secrets
+            if "gcp_service_account" in st.secrets:
+                credentials = service_account.Credentials.from_service_account_info(
+                    st.secrets["gcp_service_account"]
+                )
+                self.client = bigquery.Client(
+                    project=self.gcp_project,
+                    credentials=credentials
+                )
+            else:
+                logger.warning("No service account credentials found in secrets")
+                self.client = None
+                
         except (KeyError, AttributeError) as e:
             raise ValueError(
                 f"Missing required secrets configuration: {e}. "
                 "Please ensure secrets.toml is properly configured."
             )
-        
-        if BIGQUERY_AVAILABLE and self.gcp_project:
-            self.client = bigquery.Client(project=self.gcp_project)
-        else:
-            self.client = None
-            logger.warning("BigQuery client not available or project not "
-                           "configured")
     
     def load_data_from_bigquery(self, entity_siren: str
                                 ) -> tuple[pd.DataFrame, str]:
@@ -108,7 +117,7 @@ class GraphPlotBuilder:
 
             selected_columns = ['dateNotification', 'acheteur_nom', 'acheteur_siren',
                                 'titulaire_nom', 'titulaire_siren', 'montant', 
-                                'dureeMois', 'codeCPV', 'procedure', 'objet']
+                                'dureeMois', 'codeCPV', 'procedure', 'objet', 'codeCPV_2_3', 'annee']
         
             df = df[selected_columns]
 
@@ -119,12 +128,18 @@ class GraphPlotBuilder:
             raise
 
     def create_focused_graph(self, entity_siren: str,
-                            min_contract_amount: float = 0) -> dict:
+                            min_contract_amount: float = 0,
+                            max_contract_amount: float = None,
+                            code_cpv: int = None,
+                            annee: int = None) -> dict:
         """Create a graph focused on a specific entity using BigQuery data.
         
         Args:
             entity_siren: SIREN number of the central entity
             min_contract_amount: Minimum contract amount to include
+            max_contract_amount: Maximum contract amount to include
+            code_cpv: CPV code to filter by
+            annee: Year to filter by
         
         Returns:
             Graph data dictionary optimized for focused visualization
@@ -138,7 +153,7 @@ class GraphPlotBuilder:
         
         # Ensure required columns exist
         required_columns = ['acheteur_nom', 'titulaire_nom', 'montant',
-                            'dureeMois', 'codeCPV', 'procedure']
+                            'dureeMois', 'codeCPV', 'procedure', 'annee']
         missing_columns = [col for col in required_columns
                            if col not in X_filtered.columns]
         if missing_columns:
@@ -150,12 +165,29 @@ class GraphPlotBuilder:
                       X_filtered['titulaire_nom'].notna())
         X_filtered = X_filtered[valid_mask].copy()
         
-        # Filter by minimum contract amount if specified
-        if min_contract_amount > 0:
-            amount_mask = X_filtered['montant'] >= min_contract_amount
-            X_filtered = X_filtered[amount_mask].copy()
-            logger.info(f"Filtered contracts with amount >= {min_contract_amount:,.2f}€")
+        # Apply amount filters
+        amount_mask = X_filtered['montant'] >= min_contract_amount
+        if max_contract_amount is not None:
+            amount_mask = amount_mask & (X_filtered['montant'] <= max_contract_amount)
+        X_filtered = X_filtered[amount_mask].copy()
         
+        # Apply CPV filter if specified
+        if code_cpv is not None:
+            cpv_mask = X_filtered['codeCPV_2_3'] == code_cpv
+            X_filtered = X_filtered[cpv_mask].copy()
+            logger.info(f"Filtered contracts with CPV code: {code_cpv}")
+        
+        # Apply year filter if specified
+        if annee is not None:
+            year_mask = X_filtered['annee'] == annee
+            X_filtered = X_filtered[year_mask].copy()
+            logger.info(f"Filtered contracts for year: {annee}")
+        
+        # Check if we have any data after filtering
+        if X_filtered.empty:
+            logger.warning("No contracts found after applying filters")
+            return None
+            
         logger.info(f"Processing {len(X_filtered)} valid contracts")
         
         # Create focused graph structure
@@ -178,7 +210,7 @@ class GraphPlotBuilder:
         all_nodes = [central_entity] + connected_entities
         node_to_id = {node: i for i, node in enumerate(all_nodes)}
         
-        # Create edges - all edges connect to the central node (ID 0)
+        # Create edges - one edge per contract
         edges = []
         edge_features = []
         contract_data_list = []
@@ -196,7 +228,11 @@ class GraphPlotBuilder:
             # Store edge features (contract details)
             edge_features.append([
                 float(row['montant']) if pd.notna(row['montant']) else 0,
-                float(row['dureeMois']) if pd.notna(row['dureeMois']) else 0
+                float(row['dureeMois']) if pd.notna(row['dureeMois']) else 0,
+                row.get('codeCPV', ''),
+                row.get('procedure', ''),
+                row.get('dateNotification', ''),
+                row.get('objet', '')  # Add contract object
             ])
             
             # Store contract data for analysis
@@ -206,7 +242,9 @@ class GraphPlotBuilder:
                 'montant': row['montant'],
                 'codeCPV': row.get('codeCPV', ''),
                 'procedure': row.get('procedure', ''),
-                'dureeMois': row['dureeMois']
+                'dureeMois': row['dureeMois'],
+                'dateNotification': row.get('dateNotification', ''),
+                'objet': row.get('objet', '')  # Add contract object
             })
         
         # Compute node features
@@ -316,31 +354,31 @@ class GraphPlotBuilder:
             if i == 0:  # Central node
                 color = "#ffaa00"  # Orange for central node
                 # Size based on total amount for central node
-                size = min(50 + (total_amount / 50000), 100)  # More dramatic scaling
-                shape = "star" if entity_type == 'titulaire' else "diamond"
+                size = min(40 + (total_amount / 50000), 100)  # More dramatic scaling
+                shape = "circle"  # Always use circle for central node
                 type_label = f"Central {entity_type.title()}"
                 logger.info(f"Central node {node_name}: €{total_amount:,.2f} -> size {size}")
             elif node_type == 0:  # Buyer
                 color = "#ff9999"  # Light red
                 shape = "box"
                 # Size based on total amount - more dramatic scaling
-                size = min(10 + (total_amount / 50000), 70)  # Scale by 50k euros
+                size = min(10 + (total_amount / 50000), 50)  # Scale by 50k euros
                 type_label = "Acheteur"
                 logger.info(f"Buyer {node_name}: €{total_amount:,.2f} -> size {size}")
             else:  # Supplier
                 color = "#99ccff"  # Light blue
                 shape = "circle"
                 # Size based on total amount - more dramatic scaling
-                size = min(10 + (total_amount / 50000), 70)  # Scale by 50k euros
+                size = min(10 + (total_amount / 50000), 50)  # Scale by 50k euros
                 type_label = "Titulaire"
                 logger.info(f"Supplier {node_name}: €{total_amount:,.2f} -> size {size}")
             
             # Create tooltip with node information
             title = (f"{type_label}: {node_name}\n"
-                     f"Contracts: {features[0]}\n"
-                     f"Total Amount: {features[1]:,.2f}€\n"
-                     f"Avg Amount: {features[2]:,.2f}€\n"
-                     f"Avg Duration: {features[3]:.1f} months")
+                     f"Nombre de contrats: {features[0]}\n"
+                     f"Montant total: {features[1]:,.2f}€\n"
+                     f"Montant moyen: {features[2]:,.2f}€\n"
+                     f"Durée moyenne: {features[3]:.1f} mois")
             
             # Position central node at center, others in a circle around it
             if i == 0:
@@ -355,18 +393,43 @@ class GraphPlotBuilder:
                 x = radius * (1 if (i % 2) else -1) * ((i - 1) / len(nodes))
                 y = radius * (1 if (i % 4 < 2) else -1) * ((i - 1) / len(nodes))
             
-            net.add_node(i, label=str(node_name)[:25], color=color,
-                         size=size, shape=shape, title=title,
-                         x=x, y=y, fixed=(i == 0))  # Fix central node position
+            # Truncate label for display, show full name in tooltip
+            short_label = str(node_name)[:12] + ('...' if len(str(node_name)) > 12 else '')
+            net.add_node(
+                i,
+                label=short_label,
+                color=color,
+                size=size,
+                shape=shape,
+                title=title,  # Use the tooltip with all node information
+                x=x,
+                y=y,
+                fixed=(i == 0)
+            )
         
-        # Add edges with variable width based on contract amount
+        # Add edges with variable width based on contract amount and tooltip
         for i, edge in enumerate(edges):
             if i < len(edge_features):
                 amount = edge_features[i][0] if len(edge_features[i]) > 0 else 1
                 width = min(2 + amount / 50000, 8)  # Scale width
+                
+                # Create tooltip with contract details
+                tooltip = (f"Montant: {amount:,.2f}€\n"
+                          f"Durée: {edge_features[i][1]:.1f} mois\n"
+                          f"Code CPV: {edge_features[i][2]}\n"
+                          f"Procédure: {edge_features[i][3]}\n"
+                          f"Date: {edge_features[i][4]}\n"
+                          f"Objet: {edge_features[i][5]}")  # Add contract object
+                
+                # Add hover effect with contract details
+                net.add_edge(edge[0], edge[1], 
+                           width=width, 
+                           title=tooltip,
+                           hoverWidth=width * 1.5,  # Make edge wider on hover
+                           color='#666666',  # Default color
+                           hoverColor='#ff0000')  # Red on hover
             else:
-                width = 2
-            net.add_edge(edge[0], edge[1], width=width)
+                net.add_edge(edge[0], edge[1], width=2)
         
         # Configure physics for radial layout
         if physics_enabled:
