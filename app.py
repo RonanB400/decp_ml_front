@@ -155,7 +155,7 @@ bins = pd.read_csv('data/bins.csv', header=None).values.flatten()
 
 # Sidebar: Module selector
 module = st.sidebar.radio(
-    "Choix du module :", 
+    "Choix du module :",
     ["Exploration des données", "Estimation du montant et marchés similaires"]
 )
 
@@ -228,7 +228,7 @@ if module == "Estimation du montant et marchés similaires":
             st.error("Erreur lors de l'estimation du montant. Veuillez vérifier les paramètres et réessayer.")
 
 
-    montant = st.number_input("Montant du marché (en euros)", min_value=0, value=40000, step=1000, format="%d")
+    montant = st.slider( "Montant du marché (€) :", min_value=0,max_value=1_000_000, value=40000, step=1000)
 
     if st.button("Voir les marchés similaires"):
         params = {
@@ -264,17 +264,17 @@ if module == "Estimation du montant et marchés similaires":
 
 elif module == "Exploration des données":
     st.header("🔍 Exploration des données")
-    
+
     # Part 1: RAG Query
     st.subheader("💬 Interroger la base de données")
     st.write("Posez une question sur les marchés publics et obtenez une réponse basée sur nos données.")
-    
+
     question = st.text_area(
-        "Votre question :", 
+        "Votre question :",
         placeholder="Ex: Quels sont les principaux codeCPV et leurs signification ?",
         height=100
     )
-    
+
     if st.button("Poser la question"):
         if question.strip():
             with st.spinner("Recherche en cours..."):
@@ -285,12 +285,12 @@ elif module == "Exploration des données":
                     )
                     payload = {"question": question}
                     response = requests.post(rag_endpoint, json=payload)
-                    
+
                     if response.status_code == 200:
                         answer = response.json()
                         st.success("Réponse trouvée !")
                         st.write("**Réponse :**")
-                        
+
                         # Extract the actual answer from the nested structure
                         if "answer" in answer and "answer" in answer["answer"]:
                             final_answer = answer["answer"]["answer"]
@@ -307,22 +307,22 @@ elif module == "Exploration des données":
                     st.error(f"Erreur de connexion: {str(e)}")
         else:
             st.warning("Veuillez saisir une question.")
-    
+
     st.divider()
-    
+
     # Part 2: Graph Visualization
     st.subheader("📊 Visualisation des relations")
     st.write(
         "Explorez les relations entre acheteurs et titulaires "
         "dans les marchés publics."
     )
-    
+
     entity_siren = st.text_input(
         "Numéro SIREN :",
         placeholder="Ex: 552015228 ou 130005481",
         help="Numéro SIREN à 9 chiffres (titulaire ou acheteur)"
     )
-    
+
     min_amount = st.slider(
         "Montant minimum des contrats (€) :",
         min_value=0,
@@ -331,20 +331,20 @@ elif module == "Exploration des données":
         step=1000,
         help="Filtrer les contrats en dessous de ce montant"
     )
-    
+
     if st.button("Générer le graphique"):
         if entity_siren.strip():
             with st.spinner("Génération du graphique en cours..."):
                 try:
                     # Initialize GraphPlotBuilder
                     builder = GraphPlotBuilder()
-                    
+
                     # Create focused graph
                     graph_data = builder.create_focused_graph(
                         entity_siren=entity_siren,
                         min_contract_amount=min_amount
                     )
-                    
+
                     if graph_data:
                         # Generate visualization
                         safe_siren = entity_siren.replace(' ', '_')
@@ -355,10 +355,10 @@ elif module == "Exploration des données":
                             output_path=output_path,
                             physics_enabled=True
                         )
-                        
+
                         # Display results
                         st.success("Graphique généré avec succès !")
-                        
+
                         # Show statistics
                         contract_data = graph_data['contract_data']
                         central_entity = graph_data['central_entity']
@@ -368,13 +368,13 @@ elif module == "Exploration des données":
                         avg_amount = contract_data['montant'].mean()
                         st.write(f"**Montant total :** {total_amount:,.2f}€")
                         st.write(f"**Montant moyen :** {avg_amount:,.2f}€")
-                        
+
                         # Display the graph
                         if os.path.exists(output_path):
                             with open(output_path, 'r', encoding='utf-8') as f:
                                 html_content = f.read()
                             st.components.v1.html(html_content, height=800)
-                            
+
                             # Cleanup
                             os.remove(output_path)
                         else:
@@ -382,13 +382,13 @@ elif module == "Exploration des données":
                                 "Erreur lors de la génération du fichier "
                                 "graphique"
                             )
-                            
+
                     else:
                         st.warning(
                             f"Aucun contrat trouvé pour le SIREN: "
                             f"{entity_siren}"
                         )
-                        
+
                 except Exception as e:
                     st.error(
                         f"Erreur lors de la génération du graphique: "
@@ -403,7 +403,7 @@ elif module == "Exploration des données":
 
 footer_html = """
 <div class="footer">
-    Le wagon batch #1992 -  Ronan Bernard, Paul Colas, Loïc Dogon, 
+    Le wagon batch #1992 -  Ronan Bernard, Paul Colas, Loïc Dogon,
     Julie Hallez – 13 Juin 2025
 </div>
 """
@@ -411,5 +411,3 @@ footer_html = """
 # Display both
 st.markdown(footer_css, unsafe_allow_html=True)
 st.markdown(footer_html, unsafe_allow_html=True)
-
-
