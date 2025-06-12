@@ -1,20 +1,16 @@
 import pandas as pd
 import os
-import pickle
 import logging
-from typing import Optional, Union
 from pyvis.network import Network
 import networkx as nx
-import random
 
 try:
     from google.cloud import bigquery
-    from dotenv import load_dotenv
+    import streamlit as st
     BIGQUERY_AVAILABLE = True
-    load_dotenv()  # Load environment variables from .env file
 except ImportError:
     BIGQUERY_AVAILABLE = False
-    print("Warning: google-cloud-bigquery or python-dotenv not available")
+    print("Warning: google-cloud-bigquery or streamlit not available")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,9 +29,16 @@ class GraphPlotBuilder:
             bq_dataset: BigQuery dataset name
             bq_table: BigQuery table name
         """
-        self.gcp_project = gcp_project or os.getenv('GCP_PROJECT')
-        self.bq_dataset = bq_dataset or os.getenv('BQ_DATASET')
-        self.bq_table = bq_table or os.getenv('BQ_TABLE')
+        # Use Streamlit secrets configuration
+        try:
+            self.gcp_project = gcp_project or st.secrets["gcp"]["GCP_PROJECT"]
+            self.bq_dataset = bq_dataset or st.secrets["gcp"]["BQ_DATASET"]
+            self.bq_table = bq_table or st.secrets["gcp"]["BQ_TABLE"]
+        except (KeyError, AttributeError) as e:
+            raise ValueError(
+                f"Missing required secrets configuration: {e}. "
+                "Please ensure secrets.toml is properly configured."
+            )
         
         if BIGQUERY_AVAILABLE and self.gcp_project:
             self.client = bigquery.Client(project=self.gcp_project)
@@ -412,11 +415,9 @@ if __name__ == "__main__":
         builder = GraphPlotBuilder()
         
         if not builder.client:
-            print("Warning: BigQuery client not available. Skipping BigQuery tests.")
-            print("To test BigQuery functionality, set these environment variables:")
-            print("- GCP_PROJECT")
-            print("- BQ_DATASET") 
-            print("- BQ_TABLE")
+            print("Warning: BigQuery client not available. Skipping tests.")
+            print("To test BigQuery functionality, configure .streamlit/secrets.toml")
+            print("with GCP_PROJECT, BQ_DATASET, and BQ_TABLE")
             return False
         
         try:
@@ -564,7 +565,7 @@ if __name__ == "__main__":
             sys.exit(1)
         
         print("\nTo use with your own data:")
-        print("1. Set environment variables: GCP_PROJECT, BQ_DATASET, BQ_TABLE")
+        print("1. Configure .streamlit/secrets.toml with GCP credentials")
         print("2. Call create_focused_graph() with your entity names")
         print("3. Use plot_focused_graph() to generate visualizations")
     
