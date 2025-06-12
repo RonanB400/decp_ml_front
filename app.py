@@ -2,6 +2,8 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import requests
+from graph_plot_builder import GraphPlotBuilder
+import os
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -152,7 +154,10 @@ cpv = {f"{code} – {desc}": code for code, desc in cpv_codes}
 bins = pd.read_csv('data/bins.csv', header=None).values.flatten()
 
 # Sidebar: Module selector
-module = st.sidebar.radio("Choix du module :", ["Exploration des données", "Estimation du montant et marchés similaires"])
+module = st.sidebar.radio(
+    "Choix du module :", 
+    ["Exploration des données", "Estimation du montant et marchés similaires"]
+)
 
 # Main Panel
 st.title("Lanterne publique")
@@ -234,11 +239,11 @@ if module == "Estimation du montant et marchés similaires":
             "nature": nature,
             "formePrix": formePrix,
             "ccag": ccag,
-            "codeCPV_2_3": cpv[Code_CPV],
+            "codeCPV_3": cpv[Code_CPV],
             "sousTraitanceDeclaree": 0.0,
             "origineFrance": 0.0,
             "marcheInnovant": 0.0,
-            "idAccordCadre": 0.0,
+            "idAccordCadre": " ",
             "typeGroupementOperateurs": "Pas de groupement",
             "tauxAvance": 0.0,
         }
@@ -248,22 +253,163 @@ if module == "Estimation du montant et marchés similaires":
             data = response.json()
             st.write(data)
         else:
-            st.error("Erreur lors de la récupération des marchés similaires. Veuillez vérifier les paramètres et réessayer.")
+            st.error(f"Erreur lors de la récupération des marchés similaires. "
+                    f"Code d'erreur: {response.status_code}")
+            st.write("**Détails de l'erreur:**")
+            st.write(response.text)
+            st.write("**Paramètres envoyés:**")
+            st.json(params)
 
 
 
 elif module == "Exploration des données":
     st.header("🔍 Exploration des données")
-
-
-
+    
+    # Part 1: RAG Query
+    st.subheader("💬 Interroger la base de données")
+    st.write("Posez une question sur les marchés publics et obtenez une réponse basée sur nos données.")
+    
+    question = st.text_area(
+        "Votre question :", 
+        placeholder="Ex: Quels sont les principaux codeCPV et leurs signification ?",
+        height=100
+    )
+    
+    if st.button("Poser la question"):
+        if question.strip():
+            with st.spinner("Recherche en cours..."):
+                try:
+                    rag_endpoint = (
+                        'https://decp-708609074810.europe-west1.run.app'
+                        '/api/rag'
+                    )
+                    payload = {"question": question}
+                    response = requests.post(rag_endpoint, json=payload)
+                    
+                    if response.status_code == 200:
+                        answer = response.json()
+                        st.success("Réponse trouvée !")
+                        st.write("**Réponse :**")
+                        
+                        # Extract the actual answer from the nested structure
+                        if "answer" in answer and "answer" in answer["answer"]:
+                            final_answer = answer["answer"]["answer"]
+                            st.write(final_answer)
+                        else:
+                            st.write(answer)
+                    else:
+                        st.error(
+                            f"Erreur lors de la requête: "
+                            f"{response.status_code}"
+                        )
+                        st.write(response.text)
+                except Exception as e:
+                    st.error(f"Erreur de connexion: {str(e)}")
+        else:
+            st.warning("Veuillez saisir une question.")
+    
+    st.divider()
+    
+    # Part 2: Graph Visualization
+    st.subheader("📊 Visualisation des relations")
+    st.write(
+        "Explorez les relations entre acheteurs et titulaires "
+        "dans les marchés publics."
+    )
+    
+    entity_siren = st.text_input(
+        "Numéro SIREN :",
+        placeholder="Ex: 552015228 ou 130005481",
+        help="Numéro SIREN à 9 chiffres (titulaire ou acheteur)"
+    )
+    
+    min_amount = st.slider(
+        "Montant minimum des contrats (€) :",
+        min_value=0,
+        max_value=1_000_000,
+        value=0,
+        step=1000,
+        help="Filtrer les contrats en dessous de ce montant"
+    )
+    
+    if st.button("Générer le graphique"):
+        if entity_siren.strip():
+            with st.spinner("Génération du graphique en cours..."):
+                try:
+                    # Initialize GraphPlotBuilder
+                    builder = GraphPlotBuilder()
+                    
+                    # Create focused graph
+                    graph_data = builder.create_focused_graph(
+                        entity_siren=entity_siren,
+                        min_contract_amount=min_amount
+                    )
+                    
+                    if graph_data:
+                        # Generate visualization
+                        safe_siren = entity_siren.replace(' ', '_')
+                        entity_type = graph_data.get('entity_type', 'unknown')
+                        output_path = f"graph_{entity_type}_{safe_siren}.html"
+                        builder.plot_focused_graph(
+                            graph_data=graph_data,
+                            output_path=output_path,
+                            physics_enabled=True
+                        )
+                        
+                        # Display results
+                        st.success("Graphique généré avec succès !")
+                        
+                        # Show statistics
+                        contract_data = graph_data['contract_data']
+                        central_entity = graph_data['central_entity']
+                        st.write(f"**Entité centrale :** {central_entity}")
+                        st.write(f"**Nombre de contrats :** {len(contract_data)}")
+                        total_amount = contract_data['montant'].sum()
+                        avg_amount = contract_data['montant'].mean()
+                        st.write(f"**Montant total :** {total_amount:,.2f}€")
+                        st.write(f"**Montant moyen :** {avg_amount:,.2f}€")
+                        
+                        # Display the graph
+                        if os.path.exists(output_path):
+                            with open(output_path, 'r', encoding='utf-8') as f:
+                                html_content = f.read()
+                            st.components.v1.html(html_content, height=800)
+                            
+                            # Cleanup
+                            os.remove(output_path)
+                        else:
+                            st.error(
+                                "Erreur lors de la génération du fichier "
+                                "graphique"
+                            )
+                            
+                    else:
+                        st.warning(
+                            f"Aucun contrat trouvé pour le SIREN: "
+                            f"{entity_siren}"
+                        )
+                        
+                except Exception as e:
+                    st.error(
+                        f"Erreur lors de la génération du graphique: "
+                        f"{str(e)}"
+                    )
+                    st.write(
+                        "Assurez-vous que les variables d'environnement "
+                        "BigQuery sont configurées."
+                    )
+        else:
+            st.warning("Veuillez saisir un SIREN d'entité.")
 
 footer_html = """
 <div class="footer">
-    Le wagon batch #1992 -  Ronan Bernard, Paul Colas, Loïc Dogon, Julie Hallez – 13 Juin 2025
+    Le wagon batch #1992 -  Ronan Bernard, Paul Colas, Loïc Dogon, 
+    Julie Hallez – 13 Juin 2025
 </div>
 """
 
 # Display both
 st.markdown(footer_css, unsafe_allow_html=True)
 st.markdown(footer_html, unsafe_allow_html=True)
+
+
