@@ -1,2 +1,2 @@
 data/df_pour_bins.csv
-__pycache__/
+__pycache__/**/*
