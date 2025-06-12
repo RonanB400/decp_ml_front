@@ -15,7 +15,7 @@ custom_css = """
 
 /* Sidebar styling */
 [data-testid="stSidebar"] {
-    background-color: #4D6E75;
+    background-color: #445967;
     color: white;}
 
 label, [data-testid*="label"] {color: #1F2A30 !important;}
@@ -72,7 +72,7 @@ footer {visibility: hidden;}
 .footer {
     position: fixed;    bottom: 0;
     left: 0;            width: 100%;
-    padding: 10px 0;    background-color: #799DA7;
+    padding: 10px 0;    background-color: #59778A;
     color: white;       text-align: center;
     font-size: 14px;    z-index: 100;}
 </style>
@@ -104,6 +104,7 @@ tranches_effectif = {
 }
 options = {v: k for k, v in tranches_effectif.items()}
 id = 10
+
 cpv_codes = [
     [3000000, "Matériel et fournitures informatiques"],
     [9000000, "Huiles lubrifiantes et agents lubrifiants"],
@@ -147,6 +148,8 @@ cpv_codes = [
     [98000000, "Autres services"]
 ]
 cpv = {f"{code} – {desc}": code for code, desc in cpv_codes}
+
+bins = pd.read_csv('data/bins.csv', header=None).values.flatten()
 
 # Sidebar: Module selector
 module = st.sidebar.radio("Choix du module :", ["Exploration des données", "Estimation du montant et marchés similaires"])
@@ -194,22 +197,16 @@ if module == "Estimation du montant et marchés similaires":
             data = response.json()
             # Récupération des probabilités (1 seule prédiction ici)
             probabilities = np.array(data["prediction"][0])
-
             # Génération des bins si pas fournis
-            bins = np.linspace(6, 18, len(probabilities) + 1)  # log scale
             bin_centers = 0.5 * (bins[:-1] + bins[1:])
             montants = np.exp(bin_centers)  # retransforme en euros
-
             # Construction du DataFrame
             df = pd.DataFrame({
                 'montant': montants,
-                'probability': probabilities
-            })
+                'probability': probabilities            })
             df['smoothed'] = df['probability'].rolling(window=10, center=True, min_periods=1).mean()
-
             # Trouver le montant le plus probable
             peak_montant = df.loc[df['smoothed'].idxmax(), 'montant']
-
             # Plot
             fig, ax = plt.subplots(figsize=(10, 5))
             sns.lineplot(data=df, x='montant', y='smoothed', color='blue', ax=ax)
@@ -220,23 +217,32 @@ if module == "Estimation du montant et marchés similaires":
 
             # Centrer le graphique autour du pic
             ax.set_xlim(peak_montant * 0.1, peak_montant * 2.5)
-
             st.pyplot(fig)
 
         else:
             st.error("Erreur lors de l'estimation du montant. Veuillez vérifier les paramètres et réessayer.")
 
+
+    montant = st.number_input("Montant du marché (en euros)", min_value=0, value=40000, step=1000, format="%d")
+
     if st.button("Voir les marchés similaires"):
         params = {
-            "montant": 0,
+            "montant": montant,
             "dureeMois": DureeMois,
             "offresRecues": OffresRecues,
             "procedure": procedure,
             "nature": nature,
             "formePrix": formePrix,
             "ccag": ccag,
-            "codeCPV_2_3": Code_CPV
-            }
+            "codeCPV_2_3": cpv[Code_CPV],
+            "sousTraitanceDeclaree": 0.0,
+            "origineFrance": 0.0,
+            "marcheInnovant": 0.0,
+            "idAccordCadre": 0.0,
+            "typeGroupementOperateurs": "Pas de groupement",
+            "tauxAvance": 0.0,
+        }
+
         response = requests.post(endpoint_clusters, json=params)
         if response.status_code == 200:
             data = response.json()
@@ -244,9 +250,10 @@ if module == "Estimation du montant et marchés similaires":
         else:
             st.error("Erreur lors de la récupération des marchés similaires. Veuillez vérifier les paramètres et réessayer.")
 
+
+
 elif module == "Exploration des données":
     st.header("🔍 Exploration des données")
-
 
 
 
