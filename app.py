@@ -360,6 +360,7 @@ if module == "Estimation du montant et marchés similaires":
 
         response = requests.post(endpoint_clusters, json=params)
         if response.status_code == 200:
+            print(response)
             data = response.json()
 
             summary_description_clusters = data['summary_description']
