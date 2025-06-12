@@ -228,7 +228,7 @@ if module == "Estimation du montant et marchés similaires":
             st.error("Erreur lors de l'estimation du montant. Veuillez vérifier les paramètres et réessayer.")
 
 
-    montant = st.slider( "Montant du marché (€) :", min_value=0,max_value=1_000_000, value=40000, step=1000)
+    montant = st.slider( "Montant du marché (€) :", min_value=0,max_value=800_000, value=40000, step=1000)
 
     if st.button("Voir les marchés similaires"):
         params = {
