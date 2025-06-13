@@ -498,9 +498,9 @@ elif module == "Exploration des données":
 
     question = st.text_area(
         "Votre question :",
+        value="Quels ont été les 5 derniers contrats de la COMMUNE DE LYON ? Donne les montants, l'objet ainsi que le nom du titulaire. Filtre pour les codes CPV2 48000000.",
         placeholder="Ex: Quels sont les principaux codeCPV et leurs signification ?",
-        height=100,
-        value=st.session_state.rag_question if st.session_state.rag_question else ""
+        height=100
     )
 
     if st.button("Poser la question"):
@@ -548,6 +548,7 @@ elif module == "Exploration des données":
 
     entity_siren = st.text_input(
         "Numéro SIREN :",
+        value="216901231",
         placeholder="Ex: 552015228 ou 130005481",
         help="Numéro SIREN à 9 chiffres (titulaire ou acheteur)"
     )
