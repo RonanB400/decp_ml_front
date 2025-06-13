@@ -679,9 +679,10 @@ elif module == "Exploration des données":
                         st.info("Essayez de relâcher certains filtres pour voir plus de résultats.")
 
                 except Exception as e:
+                    import traceback
                     st.error(
-                        f"Erreur lors de la génération du graphique: "
-                        f"{str(e)}"
+                        f"Erreur lors de la génération du graphique: {str(e)}\n\n"
+                        f"Détails de l'erreur:\n{traceback.format_exc()}"
                     )
                     st.write(
                         "Assurez-vous que les variables d'environnement "
