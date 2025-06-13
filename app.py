@@ -240,18 +240,45 @@ if module == "Estimation du montant et marchés similaires":
             weighted_avg = np.average(df['montant'], weights=df['probability'])
             
             # Afficher les statistiques
-            st.write("**Statistiques de l'estimation:**")
+            st.markdown("""
+            <h3 style='font-size: 28px; margin-bottom: 20px;'>Statistiques de l'estimation</h3>
+            """, unsafe_allow_html=True)
+            
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Montant le plus probable", f"{int(round(peak_montant,0)):,.0f}".replace(",", " ") + "€")
-            with col2:
-                st.metric("Moyenne pondérée", f"{int(round(weighted_avg,0)):,.0f}".replace(",", " ") + "€")
+                st.markdown("""
+                <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>
+                    <p style='font-size: 24px; margin-bottom: 10px; color: #1F2A30;'>Prix moyen estimé</p>
+                    <p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>
+                """, unsafe_allow_html=True)
+                st.markdown(f"<p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>{int(round(weighted_avg,0)):,.0f}€</p>".replace(",", " "), unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
             
-            # Créer une figure Plotly
-            fig_plotly = go.Figure()
+            with col2:
+                # Calculate actual 80% confidence interval from probability distribution
+                df_sorted = df.sort_values('montant')
+                df_sorted['cumsum'] = df_sorted['probability'].cumsum()
+                lower_idx = df_sorted[df_sorted['cumsum'] >= 0.1].index[0]
+                upper_idx = df_sorted[df_sorted['cumsum'] >= 0.9].index[0]
+                lower_bound = int(round(df_sorted.loc[lower_idx, 'montant'], 0))
+                upper_bound = int(round(df_sorted.loc[upper_idx, 'montant'], 0))
+                range_text = f"{lower_bound:,.0f}€ - {upper_bound:,.0f}€".replace(",", " ")
+                st.markdown("""
+                <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>
+                    <p style='font-size: 24px; margin-bottom: 10px; color: #1F2A30;'>Fourchette de prix (80%)</p>
+                    <p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>
+                """, unsafe_allow_html=True)
+                st.markdown(f"<p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>{range_text}</p>", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+            
+            # Add some space before the graph
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Create Plotly figure
+            fig = go.Figure()
             
             # Ajouter la distribution
-            fig_plotly.add_trace(
+            fig.add_trace(
                 go.Scatter(
                     x=df['montant'],
                     y=df['smoothed'],
@@ -263,12 +290,12 @@ if module == "Estimation du montant et marchés similaires":
                 )
             )
             # Ajouter la ligne verticale pour la moyenne comme une trace Scatter pour la légende
-            fig_plotly.add_trace(
+            fig.add_trace(
                 go.Scatter(
                     x=[weighted_avg, weighted_avg],
                     y=[0, df['smoothed'].max()],
                     mode='lines',
-                    name='Moyenne pondérée',
+                    name='Prix moyen estimé',
                     line=dict(color='#4D90FE', width=3, dash='dash'),
                     showlegend=True,
                     hoverinfo='skip'
@@ -276,7 +303,7 @@ if module == "Estimation du montant et marchés similaires":
             )
             
             # Mise à jour du layout
-            fig_plotly.update_layout(
+            fig.update_layout(
                 title={
                     'text': "Distribution des estimations du montant",
                     'y': 0.95,
@@ -326,7 +353,7 @@ if module == "Estimation du montant et marchés similaires":
             }
             
             # Afficher le graphique Plotly
-            st.plotly_chart(fig_plotly, use_container_width=True, config=config)
+            st.plotly_chart(fig, use_container_width=True, config=config)
 
         elif response:
             st.error(f"Erreur lors de l'estimation du montant. "
@@ -335,7 +362,7 @@ if module == "Estimation du montant et marchés similaires":
             st.write(response.text)
             st.write("**Paramètres envoyés:**")
             st.json(params)
-        # Note: Le cas où response est None est déjà géré dans l'exception
+        # Note: Le cas où response est None est déjà géré dans l'exception  
 
 
     montant = st.slider( "Montant du marché (€) :", min_value=0,max_value=800_000, value=80000, step=1000)
@@ -365,9 +392,9 @@ if module == "Estimation du montant et marchés similaires":
 
             summary_description_clusters = data['summary_description']
 
-            st.write("**Description du cluster de marchés similaires:**")
+            st.write("**Description du groupe de marchés similaires:**")
             # st.write(summary_description_clusters)
-            st.write("""Ce marché appartient possiblement au cluster 452 
+            st.write("""Ce marché appartient possiblement au groupe 452 
                      qui comprend 55 autres contrats principalement pour 
                      'Logiciels et systèmes d'information' (92.0% des marchés). 
                      Les contrats types ont une valeur médiane de 80,983.90€ 
@@ -652,9 +679,10 @@ elif module == "Exploration des données":
                         st.info("Essayez de relâcher certains filtres pour voir plus de résultats.")
 
                 except Exception as e:
+                    import traceback
                     st.error(
-                        f"Erreur lors de la génération du graphique: "
-                        f"{str(e)}"
+                        f"Erreur lors de la génération du graphique: {str(e)}\n\n"
+                        f"Détails de l'erreur:\n{traceback.format_exc()}"
                     )
                     st.write(
                         "Assurez-vous que les variables d'environnement "
@@ -673,3 +701,4 @@ footer_html = """
 # Display both
 st.markdown(footer_css, unsafe_allow_html=True)
 st.markdown(footer_html, unsafe_allow_html=True)
+
