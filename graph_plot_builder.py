@@ -57,14 +57,14 @@ class GraphPlotBuilder:
             )
     
     def load_data_from_bigquery(self, entity_siren: str
-                                ) -> tuple[pd.DataFrame, str]:
+                                ) -> tuple[pd.DataFrame, str, pd.DataFrame]:
         """Load procurement data from BigQuery for a specific entity.
         
         Args:
             entity_siren: SIREN number of the entity to focus on
         
         Returns:
-            Tuple of (DataFrame with contracts, entity_type)
+            Tuple of (DataFrame with direct contracts, entity_type, DataFrame with secondary contracts)
         """
         if not self.client:
             raise ValueError("BigQuery client not available. Check your "
@@ -110,18 +110,50 @@ class GraphPlotBuilder:
                 entity_type = 'acheteur'
             else:
                 logger.warning(f"No contracts found for SIREN {entity_siren}")
-                return pd.DataFrame(), None
+                return pd.DataFrame(), None, pd.DataFrame()
             
             logger.info(f"Retrieved {len(df)} contracts for {entity_siren} as {entity_type}")
-
 
             selected_columns = ['dateNotification', 'acheteur_nom', 'acheteur_siren',
                                 'titulaire_nom', 'titulaire_siren', 'montant', 
                                 'dureeMois', 'codeCPV', 'procedure', 'objet', 'codeCPV_2_3', 'annee']
         
             df = df[selected_columns]
+            
+            # Get secondary contracts for connected entities
+            if entity_type == 'titulaire':
+                # Get all contracts for buyers connected to this supplier
+                connected_sirens = df['acheteur_siren'].unique()
+                query_secondary = f"""
+                    SELECT {', '.join(selected_columns)}
+                    FROM {self.gcp_project}.{self.bq_dataset}.{self.bq_table}
+                    WHERE CAST(acheteur_siren AS STRING) IN (
+                        {', '.join([f"'{siren}'" for siren in connected_sirens])}
+                    )
+                    AND CAST(titulaire_siren AS STRING) != '{entity_siren}'
+                """
+            else:
+                # Get all contracts for suppliers connected to this buyer
+                connected_sirens = df['titulaire_siren'].unique()
+                query_secondary = f"""
+                    SELECT {', '.join(selected_columns)}
+                    FROM {self.gcp_project}.{self.bq_dataset}.{self.bq_table}
+                    WHERE CAST(titulaire_siren AS STRING) IN (
+                        {', '.join([f"'{siren}'" for siren in connected_sirens])}
+                    )
+                    AND CAST(acheteur_siren AS STRING) != '{entity_siren}'
+                """
+            
+            # Execute secondary query if we have connected entities
+            if len(connected_sirens) > 0:
+                logger.info(f"Querying secondary contracts for {len(connected_sirens)} connected entities")
+                query_job_secondary = self.client.query(query_secondary)
+                df_secondary = query_job_secondary.result().to_dataframe()
+                logger.info(f"Retrieved {len(df_secondary)} secondary contracts")
+            else:
+                df_secondary = pd.DataFrame(columns=selected_columns)
 
-            return df, entity_type
+            return df, entity_type, df_secondary
             
         except Exception as e:
             logger.error(f"Error querying BigQuery: {e}")
@@ -145,7 +177,7 @@ class GraphPlotBuilder:
             Graph data dictionary optimized for focused visualization
         """
         # Load data from BigQuery and determine entity type
-        X_filtered, entity_type = self.load_data_from_bigquery(entity_siren)
+        X_filtered, entity_type, X_secondary = self.load_data_from_bigquery(entity_siren)
         
         if X_filtered.empty or entity_type is None:
             logger.warning(f"No contracts found for SIREN: {entity_siren}")
@@ -165,7 +197,7 @@ class GraphPlotBuilder:
                       X_filtered['titulaire_nom'].notna())
         X_filtered = X_filtered[valid_mask].copy()
         
-        # Apply amount filters
+        # Apply amount filters to primary contracts
         amount_mask = X_filtered['montant'] >= min_contract_amount
         if max_contract_amount is not None:
             amount_mask = amount_mask & (X_filtered['montant'] <= max_contract_amount)
@@ -188,19 +220,37 @@ class GraphPlotBuilder:
             logger.warning("No contracts found after applying filters")
             return None
             
-        logger.info(f"Processing {len(X_filtered)} valid contracts")
+        logger.info(f"Processing {len(X_filtered)} valid primary contracts")
+        
+        # Apply same filters to secondary contracts
+        if not X_secondary.empty:
+            # Apply amount filter
+            amount_mask = X_secondary['montant'] >= min_contract_amount
+            if max_contract_amount is not None:
+                amount_mask = amount_mask & (X_secondary['montant'] <= max_contract_amount)
+            X_secondary = X_secondary[amount_mask].copy()
+            
+            # Apply CPV filter
+            if code_cpv is not None:
+                cpv_mask = X_secondary['codeCPV_2_3'] == code_cpv
+                X_secondary = X_secondary[cpv_mask].copy()
+            
+            # Apply year filter
+            if annee is not None:
+                year_mask = X_secondary['annee'] == annee
+                X_secondary = X_secondary[year_mask].copy()
+            
+            logger.info(f"Processing {len(X_secondary)} valid secondary contracts")
         
         # Create focused graph structure
         if entity_type == 'titulaire':
             # Central node is the supplier, connected nodes are buyers
-            # Get the actual name for display from the first matching record
             central_entity = X_filtered['titulaire_nom'].iloc[0] if not X_filtered.empty else f"SIREN {entity_siren}"
             connected_entities = X_filtered['acheteur_nom'].unique().tolist()
             central_type = 1  # Supplier
             connected_type = 0  # Buyers
         else:
             # Central node is the buyer, connected nodes are suppliers
-            # Get the actual name for display from the first matching record
             central_entity = X_filtered['acheteur_nom'].iloc[0] if not X_filtered.empty else f"SIREN {entity_siren}"
             connected_entities = X_filtered['titulaire_nom'].unique().tolist()
             central_type = 0  # Buyer
@@ -215,6 +265,7 @@ class GraphPlotBuilder:
         edge_features = []
         contract_data_list = []
         
+        # Add primary edges (connections to central node)
         for _, row in X_filtered.iterrows():
             if entity_type == 'titulaire':
                 # Edge from supplier (central) to buyer
@@ -244,14 +295,53 @@ class GraphPlotBuilder:
                 'procedure': row.get('procedure', ''),
                 'dureeMois': row['dureeMois'],
                 'dateNotification': row.get('dateNotification', ''),
-                'objet': row.get('objet', '')  # Add contract object
+                'objet': row.get('objet', ''),  # Add contract object
+                'is_secondary': False  # Flag for primary contracts
             })
+        
+        # Add secondary edges (connections between external nodes)
+        if not X_secondary.empty:
+            for _, row in X_secondary.iterrows():
+                buyer_name = row['acheteur_nom']
+                supplier_name = row['titulaire_nom']
+                
+                # Only add edge if both nodes are in our graph
+                if buyer_name in node_to_id and supplier_name in node_to_id:
+                    buyer_id = node_to_id[buyer_name]
+                    supplier_id = node_to_id[supplier_name]
+                    edges.append((buyer_id, supplier_id))
+                    
+                    # Store edge features
+                    edge_features.append([
+                        float(row['montant']) if pd.notna(row['montant']) else 0,
+                        float(row['dureeMois']) if pd.notna(row['dureeMois']) else 0,
+                        row.get('codeCPV', ''),
+                        row.get('procedure', ''),
+                        row.get('dateNotification', ''),
+                        row.get('objet', '')
+                    ])
+                    
+                    # Store contract data
+                    contract_data_list.append({
+                        'acheteur_nom': row['acheteur_nom'],
+                        'titulaire_nom': row['titulaire_nom'],
+                        'montant': row['montant'],
+                        'codeCPV': row.get('codeCPV', ''),
+                        'procedure': row.get('procedure', ''),
+                        'dureeMois': row['dureeMois'],
+                        'dateNotification': row.get('dateNotification', ''),
+                        'objet': row.get('objet', ''),
+                        'is_secondary': True  # Flag for secondary contracts
+                    })
         
         # Compute node features
         logger.info("Computing node features...")
         
+        # Create contract data DataFrame
+        contract_data = pd.DataFrame(contract_data_list)
+        
         # Central node features with proper NaN handling
-        central_contracts = X_filtered
+        central_contracts = contract_data[~contract_data['is_secondary']]  # Only primary contracts
         central_total_amount = central_contracts['montant'].sum()
         central_total_amount = float(central_total_amount) if pd.notna(central_total_amount) else 0.0
         
@@ -273,10 +363,12 @@ class GraphPlotBuilder:
         node_types = [central_type]
         
         for connected_entity in connected_entities:
-            if entity_type == 'titulaire':
-                entity_contracts = X_filtered[X_filtered['acheteur_nom'] == connected_entity]
-            else:
-                entity_contracts = X_filtered[X_filtered['titulaire_nom'] == connected_entity]
+            # Get both primary and secondary contracts for this entity
+            entity_mask = (
+                (contract_data['acheteur_nom'] == connected_entity) |
+                (contract_data['titulaire_nom'] == connected_entity)
+            )
+            entity_contracts = contract_data[entity_mask]
             
             # Calculate features with proper NaN handling
             total_amount = entity_contracts['montant'].sum()
@@ -296,9 +388,6 @@ class GraphPlotBuilder:
             ]
             node_features.append(features)
             node_types.append(connected_type)
-        
-        # Create contract data DataFrame
-        contract_data = pd.DataFrame(contract_data_list)
         
         graph_data = {
             'nodes': all_nodes,
@@ -339,6 +428,7 @@ class GraphPlotBuilder:
         edge_features = graph_data['edge_features']
         central_entity = graph_data['central_entity']
         entity_type = graph_data['entity_type']
+        contract_data = graph_data['contract_data']
         
         # Create network with larger size
         net = Network(height="800px", width="100%", directed=False)
@@ -347,13 +437,26 @@ class GraphPlotBuilder:
         for i, (node_name, features, node_type) in enumerate(
                 zip(nodes, node_features, node_types)):
             
+            # Get all contracts for this node
+            if i == 0:
+                node_contracts = contract_data[~contract_data['is_secondary']]
+            else:
+                node_mask = (
+                    (contract_data['acheteur_nom'] == node_name) |
+                    (contract_data['titulaire_nom'] == node_name)
+                )
+                node_contracts = contract_data[node_mask]
+            
+            # Calculate primary and secondary contract amounts
+            primary_amount = node_contracts[~node_contracts['is_secondary']]['montant'].sum()
+            secondary_amount = node_contracts[node_contracts['is_secondary']]['montant'].sum()
+            total_amount = primary_amount + secondary_amount
+            
             # Set node properties based on type and position
-            total_amount = features[1] if len(features) > 1 else 0.0
             total_amount = total_amount if not pd.isna(total_amount) else 0.0
             
             if i == 0:  # Central node
                 color = "#ffaa00"  # Orange for central node
-                # Size based on total amount for central node
                 size = min(40 + (total_amount / 50000), 100)  # More dramatic scaling
                 shape = "circle"  # Always use circle for central node
                 type_label = f"Central {entity_type.title()}"
@@ -361,24 +464,23 @@ class GraphPlotBuilder:
             elif node_type == 0:  # Buyer
                 color = "#ff9999"  # Light red
                 shape = "box"
-                # Size based on total amount - more dramatic scaling
                 size = min(10 + (total_amount / 50000), 50)  # Scale by 50k euros
                 type_label = "Acheteur"
                 logger.info(f"Buyer {node_name}: €{total_amount:,.2f} -> size {size}")
             else:  # Supplier
                 color = "#99ccff"  # Light blue
                 shape = "circle"
-                # Size based on total amount - more dramatic scaling
                 size = min(10 + (total_amount / 50000), 50)  # Scale by 50k euros
                 type_label = "Titulaire"
                 logger.info(f"Supplier {node_name}: €{total_amount:,.2f} -> size {size}")
             
-            # Create tooltip with node information
+            # Create tooltip with node information including secondary contracts
             title = (f"{type_label}: {node_name}\n"
-                     f"Nombre de contrats: {features[0]}\n"
-                     f"Montant total: {features[1]:,.2f}€\n"
-                     f"Montant moyen: {features[2]:,.2f}€\n"
-                     f"Durée moyenne: {features[3]:.1f} mois")
+                     f"Nombre de contrats primaires: {len(node_contracts[~node_contracts['is_secondary']])}\n"
+                     f"Montant total primaire: {primary_amount:,.2f}€\n"
+                     f"Nombre de contrats secondaires: {len(node_contracts[node_contracts['is_secondary']])}\n"
+                     f"Montant total secondaire: {secondary_amount:,.2f}€\n"
+                     f"Montant total: {total_amount:,.2f}€")
             
             # Position central node at center, others in a circle around it
             if i == 0:
@@ -413,20 +515,25 @@ class GraphPlotBuilder:
                 amount = edge_features[i][0] if len(edge_features[i]) > 0 else 1
                 width = min(2 + amount / 50000, 8)  # Scale width
                 
+                # Check if this is a secondary edge (neither node is central)
+                is_secondary = edge[0] != 0 and edge[1] != 0
+                
                 # Create tooltip with contract details
-                tooltip = (f"Montant: {amount:,.2f}€\n"
+                tooltip = (f"{'Contrat secondaire' if is_secondary else 'Contrat primaire'}\n"
+                          f"Montant: {amount:,.2f}€\n"
                           f"Durée: {edge_features[i][1]:.1f} mois\n"
                           f"Code CPV: {edge_features[i][2]}\n"
                           f"Procédure: {edge_features[i][3]}\n"
                           f"Date: {edge_features[i][4]}\n"
-                          f"Objet: {edge_features[i][5]}")  # Add contract object
+                          f"Objet: {edge_features[i][5]}")
                 
                 # Add hover effect with contract details
                 net.add_edge(edge[0], edge[1], 
                            width=width, 
                            title=tooltip,
                            hoverWidth=width * 1.5,  # Make edge wider on hover
-                           color='#666666',  # Default color
+                           color='#666666' if not is_secondary else '#aaaaaa',  # Lighter color for secondary
+                           style='dashed' if is_secondary else 'solid',  # Dashed line for secondary
                            hoverColor='#ff0000')  # Red on hover
             else:
                 net.add_edge(edge[0], edge[1], width=2)
@@ -462,7 +569,13 @@ class GraphPlotBuilder:
         logger.info(f"Focused graph visualization saved to {output_path}")
         logger.info(f"Central entity: {central_entity} ({entity_type})")
         logger.info(f"Connected entities: {len(nodes) - 1}")
-        logger.info(f"Total contracts: {len(edges)}")
+        
+        # Log contract statistics
+        primary_contracts = contract_data[~contract_data['is_secondary']]
+        secondary_contracts = contract_data[contract_data['is_secondary']]
+        logger.info(f"Total primary contracts: {len(primary_contracts)}")
+        logger.info(f"Total secondary contracts: {len(secondary_contracts)}")
+        logger.info(f"Total contracts: {len(contract_data)}")
 
     
 
