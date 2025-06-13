@@ -193,6 +193,10 @@ if module == "Estimation du montant et marchés similaires":
     #siret = st.number_input("Entrer le numéro SIRET", min_value=10000000000000, max_value=99999999999999, value=80866548300018, step=1, format="%d")
     effectif = st.selectbox("Choisir une tranche d'effectif :", list(options.keys()))
 
+    # Initialize session state for estimation results if not exists
+    if 'estimation_results' not in st.session_state:
+        st.session_state.estimation_results = None
+
     st.write("Le montant estimé du marché est de :")
     if st.button("Estimer le montant"):
         params = {
@@ -215,157 +219,155 @@ if module == "Estimation du montant et marchés similaires":
             }
         try:
             response = requests.post(endpoint_estimation, json=params)
+            if response.status_code == 200:
+                st.session_state.estimation_results = response.json()
+            else:
+                st.error(f"Erreur lors de l'estimation du montant. Code d'erreur: {response.status_code}")
+                st.write("**Détails de l'erreur:**")
+                st.write(response.text)
+                st.write("**Paramètres envoyés:**")
+                st.json(params)
         except requests.exceptions.RequestException as e:
             st.error(f"Erreur de connexion: {str(e)}")
             st.write("**Paramètres envoyés:**")
             st.json(params)
-            response = None
 
-        if response and response.status_code == 200:
-            data = response.json()
-            # Récupération des probabilités (1 seule prédiction ici)
-            probabilities = np.array(data["prediction"][0])
-            # Génération des bins si pas fournis
-            bin_centers = 0.5 * (bins[:-1] + bins[1:])
-            montants = np.exp(bin_centers)  # retransforme en euros
-            # Construction du DataFrame
-            df = pd.DataFrame({
-                'montant': montants,
-                'probability': probabilities
-            })
-            df['smoothed'] = df['probability'].rolling(window=10, center=True, min_periods=1).mean()
-            
-            # Trouver le montant le plus probable et la moyenne
-            peak_montant = df.loc[df['smoothed'].idxmax(), 'montant']
-            weighted_avg = np.average(df['montant'], weights=df['probability'])
-            
-            # Afficher les statistiques
+    # Display estimation results if they exist
+    if st.session_state.estimation_results is not None:
+        data = st.session_state.estimation_results
+        # Récupération des probabilités (1 seule prédiction ici)
+        probabilities = np.array(data["prediction"][0])
+        # Génération des bins si pas fournis
+        bin_centers = 0.5 * (bins[:-1] + bins[1:])
+        montants = np.exp(bin_centers)  # retransforme en euros
+        # Construction du DataFrame
+        df = pd.DataFrame({
+            'montant': montants,
+            'probability': probabilities
+        })
+        df['smoothed'] = df['probability'].rolling(window=10, center=True, min_periods=1).mean()
+        
+        # Trouver le montant le plus probable et la moyenne
+        peak_montant = df.loc[df['smoothed'].idxmax(), 'montant']
+        weighted_avg = np.average(df['montant'], weights=df['probability'])
+        
+        # Afficher les statistiques
+        st.markdown("""
+        <h3 style='font-size: 28px; margin-bottom: 20px;'>Statistiques de l'estimation</h3>
+        """, unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
             st.markdown("""
-            <h3 style='font-size: 28px; margin-bottom: 20px;'>Statistiques de l'estimation</h3>
+            <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>
+                <p style='font-size: 24px; margin-bottom: 10px; color: #1F2A30;'>Prix moyen estimé</p>
+                <p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>
             """, unsafe_allow_html=True)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("""
-                <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>
-                    <p style='font-size: 24px; margin-bottom: 10px; color: #1F2A30;'>Prix moyen estimé</p>
-                    <p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>
-                """, unsafe_allow_html=True)
-                st.markdown(f"<p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>{int(round(weighted_avg,0)):,.0f}€</p>".replace(",", " "), unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-            
-            with col2:
-                # Calculate actual 80% confidence interval from probability distribution
-                df_sorted = df.sort_values('montant')
-                df_sorted['cumsum'] = df_sorted['probability'].cumsum()
-                lower_idx = df_sorted[df_sorted['cumsum'] >= 0.1].index[0]
-                upper_idx = df_sorted[df_sorted['cumsum'] >= 0.9].index[0]
-                lower_bound = int(round(df_sorted.loc[lower_idx, 'montant'], 0))
-                upper_bound = int(round(df_sorted.loc[upper_idx, 'montant'], 0))
-                range_text = f"{lower_bound:,.0f}€ - {upper_bound:,.0f}€".replace(",", " ")
-                st.markdown("""
-                <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>
-                    <p style='font-size: 24px; margin-bottom: 10px; color: #1F2A30;'>Fourchette de prix (80%)</p>
-                    <p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>
-                """, unsafe_allow_html=True)
-                st.markdown(f"<p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>{range_text}</p>", unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-            
-            # Add some space before the graph
-            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(f"<p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>{int(round(weighted_avg, -3)):,.0f}€</p>".replace(",", " "), unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        with col2:
+            # Calculate actual 80% confidence interval from probability distribution
+            df_sorted = df.sort_values('montant')
+            df_sorted['cumsum'] = df_sorted['probability'].cumsum()
+            lower_idx = df_sorted[df_sorted['cumsum'] >= 0.1].index[0]
+            upper_idx = df_sorted[df_sorted['cumsum'] >= 0.9].index[0]
+            lower_bound = int(round(df_sorted.loc[lower_idx, 'montant'], -3))
+            upper_bound = int(round(df_sorted.loc[upper_idx, 'montant'], -3))
+            range_text = f"{lower_bound:,.0f}€ - {upper_bound:,.0f}€".replace(",", " ")
+            st.markdown("""
+            <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>
+                <p style='font-size: 24px; margin-bottom: 10px; color: #1F2A30;'>Fourchette de prix (80%)</p>
+                <p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>
+            """, unsafe_allow_html=True)
+            st.markdown(f"<p style='font-size: 42px; font-weight: bold; margin: 0; color: #1F2A30;'>{range_text}</p>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        # Add some space before the graph
+        st.markdown("<br>", unsafe_allow_html=True)
 
-            # Create Plotly figure
-            fig = go.Figure()
-            
-            # Ajouter la distribution
-            fig.add_trace(
-                go.Scatter(
-                    x=df['montant'],
-                    y=df['smoothed'],
-                    name='Distribution',
-                    line=dict(color='#4D6E75', width=3),
-                    fill='tozeroy',  # Ajouter un remplissage sous la courbe
-                    fillcolor='rgba(77, 110, 117, 0.2)',  # Couleur semi-transparente
-                    hovertemplate='Montant: %{x:,.0f} €<br>Probabilité: %{y:.1%}<extra></extra>'
-                )
+        # Create Plotly figure
+        fig = go.Figure()
+        
+        # Ajouter la distribution
+        fig.add_trace(
+            go.Scatter(
+                x=df['montant'],
+                y=df['smoothed'],
+                name='Distribution',
+                line=dict(color='#4D6E75', width=3),
+                fill='tozeroy',  # Ajouter un remplissage sous la courbe
+                fillcolor='rgba(77, 110, 117, 0.2)',  # Couleur semi-transparente
+                hovertemplate='Montant: %{x:,.0f} €<br>Probabilité: %{y:.1%}<extra></extra>'
             )
-            # Ajouter la ligne verticale pour la moyenne comme une trace Scatter pour la légende
-            fig.add_trace(
-                go.Scatter(
-                    x=[weighted_avg, weighted_avg],
-                    y=[0, df['smoothed'].max()],
-                    mode='lines',
-                    name='Prix moyen estimé',
-                    line=dict(color='#4D90FE', width=3, dash='dash'),
-                    showlegend=True,
-                    hoverinfo='skip'
-                )
-            )
-            
-            # Mise à jour du layout
-            fig.update_layout(
-                title={
-                    'text': "Distribution des estimations du montant",
-                    'y': 0.95,
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'yanchor': 'top',
-                    'font': dict(size=20, color='black')
-                },
-                xaxis_title="Montant estimé (€)",
-                yaxis_title="Probabilité",
-                hovermode='x unified',
-                height=500,
-                width=1400,
-                template='simple_white',
+        )
+        # Ajouter la ligne verticale pour la moyenne comme une trace Scatter pour la légende
+        fig.add_trace(
+            go.Scatter(
+                x=[weighted_avg, weighted_avg],
+                y=[0, df['smoothed'].max()],
+                mode='lines',
+                name='Prix moyen estimé',
+                line=dict(color='#4D90FE', width=3, dash='dash'),
                 showlegend=True,
-                plot_bgcolor='#EAF1F2',
-                paper_bgcolor='#EAF1F2',
-                font=dict(color='black'),
-                xaxis=dict(
-                    range=[
-                        max(weighted_avg * 0.2, df['montant'].min()),
-                        min(weighted_avg * 2.0, df['montant'].max())
-                    ],
-                    gridcolor='rgba(0,0,0,0.1)',
-                    color='black',
-                    fixedrange=True,
-                    tickfont=dict(size=14, color='black'),
-                    title_font=dict(size=16, color='black')
-                ),
-                yaxis=dict(
-                    gridcolor='rgba(0,0,0,0.1)',
-                    color='black',
-                    fixedrange=True,
-                    tickfont=dict(size=14, color='black'),
-                    title_font=dict(size=16, color='black'),
-                    tickformat='.0%'
-                ),
-                legend=dict(
-                    font=dict(size=16, color='black')
-                ),
-                dragmode=False
+                hoverinfo='skip'
             )
-            
-            # Configuration pour désactiver les interactions de déplacement mais garder axes et légende
-            config = {
-                'displayModeBar': False  # Cache la barre d'outils
-            }
-            
-            # Afficher le graphique Plotly
-            st.plotly_chart(fig, use_container_width=True, config=config)
+        )
+        
+        # Mise à jour du layout
+        fig.update_layout(
+            title={
+                'text': "Distribution des estimations du montant",
+                'y': 0.95,
+                'x': 0.5,
+                'xanchor': 'center',
+                'yanchor': 'top',
+                'font': dict(size=20, color='black')
+            },
+            xaxis_title="Montant estimé (€)",
+            yaxis_title="Probabilité",
+            hovermode='x unified',
+            height=500,
+            width=1400,
+            template='simple_white',
+            showlegend=True,
+            plot_bgcolor='#EAF1F2',
+            paper_bgcolor='#EAF1F2',
+            font=dict(color='black'),
+            xaxis=dict(
+                range=[
+                    max(weighted_avg * 0.2, df['montant'].min()),
+                    min(weighted_avg * 2.0, df['montant'].max())
+                ],
+                gridcolor='rgba(0,0,0,0.1)',
+                color='black',
+                fixedrange=True,
+                tickfont=dict(size=14, color='black'),
+                title_font=dict(size=16, color='black')
+            ),
+            yaxis=dict(
+                gridcolor='rgba(0,0,0,0.1)',
+                color='black',
+                fixedrange=True,
+                tickfont=dict(size=14, color='black'),
+                title_font=dict(size=16, color='black'),
+                tickformat='.0%'
+            ),
+            legend=dict(
+                font=dict(size=16, color='black')
+            ),
+            dragmode=False
+        )
+        
+        # Configuration pour désactiver les interactions de déplacement mais garder axes et légende
+        config = {
+            'displayModeBar': False  # Cache la barre d'outils
+        }
+        
+        # Afficher le graphique Plotly
+        st.plotly_chart(fig, use_container_width=True, config=config)
 
-        elif response:
-            st.error(f"Erreur lors de l'estimation du montant. "
-                    f"Code d'erreur: {response.status_code}")
-            st.write("**Détails de l'erreur:**")
-            st.write(response.text)
-            st.write("**Paramètres envoyés:**")
-            st.json(params)
-        # Note: Le cas où response est None est déjà géré dans l'exception  
-
-
-    montant = st.slider( "Montant du marché (€) :", min_value=0,max_value=800_000, value=80000, step=1000)
+    montant = st.slider("Montant du marché (€) :", min_value=0, max_value=800_000, value=80000, step=1000)
 
     if st.button("Voir les marchés similaires"):
         params = {
@@ -394,7 +396,7 @@ if module == "Estimation du montant et marchés similaires":
 
             st.write("**Description du groupe de marchés similaires:**")
             # st.write(summary_description_clusters)
-            st.write("""Ce marché appartient possiblement au groupe 452 
+            st.write("""Ce marché appartient possiblement au groupe 
                      qui comprend 55 autres contrats principalement pour 
                      'Logiciels et systèmes d'information' (92.0% des marchés). 
                      Les contrats types ont une valeur médiane de 80,983.90€ 
